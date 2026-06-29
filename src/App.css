@@ -1,0 +1,791 @@
+body {
+  margin: 0;
+  font-family: Arial, Helvetica, sans-serif;
+  background: #e9e9e9;
+  color: #222;
+}
+
+.page {
+  min-height: 100vh;
+  padding: 32px;
+}
+
+input::placeholder,
+textarea::placeholder {
+  font-style: italic;
+  color: #777;
+}
+
+.rota-paper {
+  background: #f7f4ef;
+  max-width: 1250px;
+  margin: 0 auto;
+  padding: 36px;
+  box-shadow: 0 8px 24px rgba(0, 0, 0, 0.18);
+}
+
+.rota-header {
+  text-align: center;
+  margin-bottom: 24px;
+}
+
+.rota-header h1,
+.rota-header h2,
+.rota-header h3,
+.rota-header p {
+  margin: 8px 0;
+  font-style: italic;
+  text-decoration: underline;
+  font-weight: 500;
+}
+
+.rota-header h1 {
+  font-size: 34px;
+}
+
+.week-select {
+  display: block;
+  width: 240px;
+  margin: 12px auto;
+  padding: 8px 10px;
+  font-size: 18px;
+  text-align: center;
+  text-align-last: center;
+}
+
+.rota-table {
+  width: 100%;
+  border-collapse: collapse;
+  table-layout: fixed;
+  background: #f7f4ef;
+}
+
+.rota-table th,
+.rota-table td {
+  border: 1px solid #777;
+  padding: 10px;
+  vertical-align: top;
+  text-align: left;
+}
+
+.rota-table thead th {
+  text-align: center;
+  font-weight: 700;
+}
+
+.rota-table tbody th {
+  width: 135px;
+  font-weight: 700;
+}
+
+.rota-table td {
+  height: 88px;
+  font-size: 17px;
+  line-height: 1.45;
+}
+
+.empty-cell {
+  color: #999;
+}
+
+.vacant {
+  margin-top: 8px;
+  font-weight: bold;
+  color: #b00020;
+}
+
+.note {
+  margin-top: 4px;
+  font-size: 14px;
+  font-style: italic;
+  color: #555;
+}
+
+.editor-panel {
+  margin-top: 32px;
+  padding: 20px;
+  border: 1px solid #777;
+  background: #fffdf8;
+}
+
+.editor-panel h2 {
+  margin-top: 0;
+}
+
+.editor-grid {
+  display: grid;
+  grid-template-columns: repeat(3, 1fr);
+  gap: 18px;
+  margin-bottom: 18px;
+}
+
+.editor-panel label {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  font-weight: 700;
+}
+
+.editor-panel select,
+.editor-panel input,
+.editor-panel textarea {
+  font: inherit;
+  padding: 8px;
+  border: 1px solid #aaa;
+}
+
+.editor-full {
+  margin-bottom: 18px;
+}
+
+.editor-actions {
+  display: flex;
+  gap: 12px;
+}
+
+.editor-actions button {
+  padding: 10px 14px;
+  font: inherit;
+  cursor: pointer;
+}
+
+.editor-actions .danger {
+  color: white;
+  background: #b00020;
+  border: 1px solid #800018;
+}
+
+.clickable-cell {
+  cursor: pointer;
+}
+
+.clickable-cell:hover {
+  background: #fff7d6;
+}
+
+.selected-cell {
+  outline: 3px solid #2b6cb0;
+  outline-offset: -3px;
+  background: #e8f1ff;
+}
+
+.login-panel {
+  max-width: 420px;
+  margin: 80px auto;
+  padding: 28px;
+  background: #f7f4ef;
+  box-shadow: 0 8px 24px rgba(0, 0, 0, 0.18);
+}
+
+.login-panel h1,
+.login-panel h2 {
+  text-align: center;
+}
+
+.login-panel form,
+.login-panel label {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+}
+
+.login-panel label {
+  margin-bottom: 16px;
+  font-weight: 700;
+}
+
+.login-panel input {
+  padding: 10px;
+  font: inherit;
+}
+
+.login-panel button,
+.auth-bar button {
+  padding: 10px 14px;
+  font: inherit;
+  cursor: pointer;
+}
+
+.auth-bar {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  margin-bottom: 18px;
+}
+
+.auth-actions {
+  display: flex;
+  gap: 10px;
+}
+
+.week-nav {
+  display: flex;
+  justify-content: center;
+  gap: 10px;
+  margin: 14px 0;
+}
+
+.week-nav button {
+  padding: 8px 12px;
+  font: inherit;
+  cursor: pointer;
+}
+
+.week-nav {
+  width: 100%;
+  display: flex;
+  justify-content: center;
+  align-items: center;
+  gap: 14px;
+  margin: 18px auto;
+}
+
+.week-nav button {
+  min-width: 185px;
+  text-align: center;
+}
+
+.admin-tabs {
+  display: flex;
+  justify-content: center;
+  align-items: center;
+  gap: 16px;
+  margin: 18px auto;
+  width: fit-content;
+}
+
+.admin-tabs button {
+  width: 220px;
+  padding: 12px 16px;
+  font: inherit;
+  cursor: pointer;
+  text-align: center;
+}
+
+.admin-tabs .active-tab {
+  font-weight: 700;
+  outline: 3px solid #2b6cb0;
+}
+
+.base-editor-title {
+  text-align: center;
+}
+
+.base-editor-title {
+  text-align: center;
+  margin-top: 24px;
+}
+
+.login-monogram {
+  width: 150px;
+  height: auto;
+  margin: 0 auto 12px auto;
+  display: block;
+  opacity: 0.9;
+}
+
+.login-card h1,
+.login-card h2 {
+  margin-bottom: 4px;
+}
+
+.rota-monogram {
+  width: 100px;
+  height: auto;
+  margin: 0 auto 12px auto;
+  display: block;
+  opacity: 0.9;
+}
+
+/* Force visible headings on light background */
+.login-panel h1,
+.login-panel h2,
+.rota-header h1,
+.rota-header h2,
+.rota-header h3,
+.editor-panel h2,
+.base-editor-title {
+  color: #222 !important;
+}
+
+
+
+/* Mobile day-card rota view is hidden on desktop. */
+.mobile-rota-days {
+  display: none;
+}
+
+.mobile-shift-card {
+  font: inherit;
+}
+
+/* Mobile viewer layout */
+@media (max-width: 768px) {
+  .page {
+    padding: 8px;
+  }
+
+  .rota-paper {
+    max-width: 100%;
+    padding: 14px 8px;
+    box-shadow: none;
+    overflow-x: visible;
+  }
+
+  .auth-bar {
+    font-size: 14px;
+    gap: 8px;
+  }
+
+  .auth-actions {
+    display: flex;
+    gap: 8px;
+  }
+
+  .auth-bar button {
+    padding: 8px 10px;
+    font-size: 14px;
+  }
+
+  .rota-header h1 {
+    font-size: 24px;
+  }
+
+  .rota-header h2,
+  .rota-header h3,
+  .rota-header p {
+    font-size: 18px;
+  }
+
+  .rota-monogram {
+    width: 48px;
+    margin: 6px auto 10px auto;
+  }
+
+  .week-nav {
+    display: flex;
+    flex-direction: row;
+    justify-content: center;
+    align-items: center;
+    flex-wrap: nowrap;
+    gap: 6px;
+    width: 100%;
+    margin: 14px auto;
+  }
+
+  .week-nav button {
+    flex: 1 1 0;
+    min-width: 0;
+    max-width: 125px;
+    padding: 9px 6px;
+    font-size: 13px;
+    text-align: center;
+    white-space: nowrap;
+  }
+
+.week-select {
+  display: block;
+  width: 310px;
+  margin: 14px auto;
+  padding: 10px 12px;
+  font-size: 16px;
+  text-align: center;
+}
+
+  .admin-tabs {
+    display: flex;
+    justify-content: center;
+    flex-wrap: nowrap;
+    gap: 8px;
+    width: 100%;
+    margin: 14px auto;
+  }
+
+  .admin-tabs button {
+    flex: 1 1 0;
+    min-width: 0;
+    max-width: 170px;
+    font-size: 14px;
+    padding: 10px 8px;
+    text-align: center;
+  }
+
+  .rota-table {
+    display: none;
+  }
+
+  .mobile-rota-days {
+    display: flex;
+    flex-direction: column;
+    gap: 14px;
+    margin-top: 14px;
+  }
+
+  .mobile-day-card {
+    border: 1px solid #c9bfae;
+    border-radius: 14px;
+    background: #fffdf8;
+    box-shadow: 0 3px 10px rgba(0, 0, 0, 0.08);
+    overflow: hidden;
+  }
+
+  .mobile-day-card h4 {
+    margin: 0;
+    padding: 12px 14px;
+    background: #efe6d8;
+    border-bottom: 1px solid #c9bfae;
+    font-size: 17px;
+    text-align: left;
+  }
+
+  .mobile-shift-card {
+    display: grid;
+    grid-template-columns: 92px 1fr;
+    gap: 8px 12px;
+    width: 100%;
+    padding: 12px 14px;
+    border: 0;
+    border-bottom: 1px solid #e2d8ca;
+    background: transparent;
+    color: inherit;
+    text-align: left;
+  }
+
+  .mobile-shift-card:last-child {
+    border-bottom: 0;
+  }
+
+  .mobile-shift-title {
+    font-weight: 700;
+    font-size: 14px;
+  }
+
+  .mobile-shift-staff {
+    display: flex;
+    flex-direction: column;
+    gap: 2px;
+    font-size: 15px;
+    line-height: 1.3;
+  }
+
+  .mobile-shift-card .vacant,
+  .mobile-shift-card .note {
+    grid-column: 2;
+    margin-top: 0;
+  }
+
+  .editor-panel {
+    display: block;
+    margin-top: 18px;
+    padding: 12px;
+  }
+
+  .editor-grid {
+    display: grid;
+    grid-template-columns: 1fr;
+    gap: 12px;
+  }
+
+  .editor-panel select,
+  .editor-panel input,
+  .editor-panel textarea {
+    width: 100%;
+    box-sizing: border-box;
+    font-size: 16px;
+  }
+
+  .editor-actions {
+    flex-direction: column;
+    gap: 10px;
+  }
+
+  .editor-actions button {
+    width: 100%;
+    font-size: 15px;
+    padding: 12px;
+  }
+
+  .selected-cell {
+    outline: 3px solid #2b6cb0;
+    background: #e8f1ff;
+  }
+}
+
+@media print {
+  @page {
+    size: landscape;
+    margin: 5mm;
+  }
+
+  html,
+  body,
+  #root {
+    width: 100%;
+    height: auto !important;
+    margin: 0 !important;
+    padding: 0 !important;
+    background: white !important;
+    overflow: visible !important;
+  }
+
+  * {
+    box-sizing: border-box;
+  }
+
+  .auth-bar,
+  .week-nav,
+  .week-select,
+  .admin-tabs,
+  .editor-panel,
+  .print-button,
+  .mobile-rota-cards,
+  .base-editor-title {
+    display: none !important;
+  }
+
+  .page {
+    width: 100% !important;
+    min-height: 0 !important;
+    margin: 0 !important;
+    padding: 0 !important;
+    overflow: visible !important;
+  }
+
+  .rota-paper {
+    width: 100% !important;
+    max-width: none !important;
+    min-height: 0 !important;
+    margin: 0 !important;
+    padding: 0 !important;
+    box-shadow: none !important;
+    background: white !important;
+    overflow: visible !important;
+  }
+
+  .rota-header {
+    margin: 0 0 6mm 0 !important;
+    padding: 0 !important;
+  }
+
+  .rota-monogram {
+    width: 55px !important;
+    margin: 0 auto 2mm auto !important;
+  }
+
+  .rota-header h1 {
+    font-size: 24px !important;
+    margin: 1mm 0 !important;
+  }
+
+  .rota-header h2,
+  .rota-header h3,
+  .rota-header p {
+    font-size: 14px !important;
+    margin: 1mm 0 !important;
+  }
+
+  .rota-table {
+    display: table !important;
+    width: 100% !important;
+    min-width: 0 !important;
+    max-width: 100% !important;
+    table-layout: fixed !important;
+    border-collapse: collapse !important;
+    margin: 0 !important;
+    background: white !important;
+    page-break-inside: avoid !important;
+    break-inside: avoid !important;
+  }
+
+  .rota-table th,
+  .rota-table td {
+    border: 1px solid #222 !important;
+    padding: 7px !important;
+    font-size: 12px !important;
+    line-height: 1.25 !important;
+    vertical-align: top !important;
+    overflow-wrap: break-word !important;
+    word-break: normal !important;
+  }
+
+  .rota-table td {
+    height: 82px !important;
+  }
+
+  .rota-table tbody th {
+    width: 105px !important;
+  }
+
+  .empty-cell {
+    color: #000 !important;
+  }
+
+  .vacant {
+    margin-top: 3px !important;
+    color: #000 !important;
+    font-weight: 700 !important;
+  }
+
+  .note {
+    margin-top: 2px !important;
+    color: #000 !important;
+    font-size: 10px !important;
+  }
+}
+
+.loading-text {
+  text-align: center;
+  font-weight: 700;
+  margin: 32px 0;
+}
+
+/* =========================
+   PRINT FIX
+   Always print desktop rota only
+   ========================= */
+
+@media print {
+  @page {
+    size: A4 landscape;
+    margin: 8mm;
+  }
+
+  body {
+    background: white !important;
+  }
+
+  /* Hide app controls */
+  .auth-bar,
+  .week-nav,
+  .editor-panel,
+  .base-editor,
+  .print-button,
+  button,
+  select,
+  input,
+  textarea {
+    display: none !important;
+  }
+
+  /* Hide mobile/day-by-day print layout */
+  .mobile-rota,
+  .mobile-day,
+  .mobile-day-card,
+  .day-card,
+  .day-stack,
+  .rota-mobile-view {
+    display: none !important;
+  }
+
+  /* Force desktop rota to print */
+  .desktop-rota,
+  .rota-table,
+  table {
+    display: table !important;
+    width: 100% !important;
+    max-width: 100% !important;
+    table-layout: fixed !important;
+    page-break-inside: avoid !important;
+    break-inside: avoid !important;
+  }
+
+  thead {
+    display: table-header-group !important;
+  }
+
+  tr {
+    page-break-inside: avoid !important;
+    break-inside: avoid !important;
+  }
+
+  th,
+  td {
+    font-size: 9px !important;
+    padding: 4px !important;
+    vertical-align: top !important;
+    word-break: break-word !important;
+  }
+
+  .rota-paper {
+    box-shadow: none !important;
+    margin: 0 !important;
+    padding: 0 !important;
+    width: 100% !important;
+    max-width: 100% !important;
+  }
+
+  .page {
+    padding: 0 !important;
+    margin: 0 !important;
+    width: 100% !important;
+  }
+}
+
+.modalOverlay {
+  position: fixed;
+  inset: 0;
+  background: rgba(0, 0, 0, 0.45);
+  display: flex;
+  justify-content: center;
+  align-items: center;
+  z-index: 9999;
+}
+
+.modal {
+  width: 360px;
+  max-width: 90%;
+  background: #fff;
+  border-radius: 10px;
+  padding: 24px;
+  text-align: center;
+  box-shadow: 0 10px 30px rgba(0,0,0,.3);
+}
+
+.modal h2 {
+  margin: 0 0 18px;
+  color: #222;
+  font-size: 1.7rem;
+  font-weight: 700;
+}
+
+.modal p {
+  margin: 10px 0;
+  color: #333;
+  font-size: 1.1rem;
+  line-height: 1.4;
+}
+
+.buttonRow {
+  display: flex;
+  gap: 12px;
+  justify-content: center;
+  margin-top: 20px;
+}
+
+.dangerButton {
+  background: #c62828;
+  color: white;
+  border: none;
+  border-radius: 6px;
+  padding: 10px 18px;
+  cursor: pointer;
+  transition: background 0.2s ease;
+}
+
+.dangerButton:hover {
+  background: #a91f1f;
+}
+
+.continueButton {
+  background: #222;
+  color: white;
+  border: none;
+  border-radius: 6px;
+  padding: 10px 18px;
+  cursor: pointer;
+  transition: background 0.2s ease;
+}
+
+.continueButton:hover {
+  background: #444;
+}
