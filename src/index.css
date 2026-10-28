@@ -177,3 +177,7 @@ code {
   margin: 0;
 }
 
+.rota-header .audit-dialog > p {
+  text-decoration: none;
+  font-style: normal;
+}

@@ -14,6 +14,9 @@ import {
   setDoc,
   deleteDoc,
   writeBatch,
+  limit,
+  startAfter,
+  serverTimestamp,
 } from "firebase/firestore";
 import {
   onAuthStateChanged,
@@ -24,6 +27,57 @@ import {
 import { db, auth } from "./firebase";
 import "./App.css";
 import lcMonogram from "./assets/lc-monogram.png";
+
+// Compact audit helpers. A tracked write and its log are committed atomically.
+// These client-side helpers do not prevent bypass via direct Firestore writes.
+function auditFields(value) {
+  if (!value) return null;
+  const { staff, vacantSlots, active, status, effectiveFrom, patternLength,
+    contractedHours, contractHistory, staffType, role, paidHours,
+    startDate, endDate, hours, date, shift, dayIndex, displayName,
+    archived, publishedEarly, weekStart, employeeId, employees, leaveHours,
+    leaveHoursByDate, absenceHoursByDate, actualHours, staffName } = value;
+  return Object.fromEntries(Object.entries({
+    staff, vacantSlots, active, status, effectiveFrom, patternLength,
+    contractedHours, contractHistory, staffType, role, paidHours,
+    startDate, endDate, hours, date, shift, dayIndex, displayName,
+    archived, publishedEarly, weekStart, employeeId, employees, leaveHours,
+    leaveHoursByDate, absenceHoursByDate, actualHours, staffName
+  }).filter(([, item]) => item !== undefined));
+}
+function sameAuditValues(a, b) { return JSON.stringify(a) === JSON.stringify(b); }
+async function auditedWrite(reference, nextData, options = {}) {
+  const beforeSnap = await getDoc(reference);
+  const before = auditFields(beforeSnap.exists() ? beforeSnap.data() : null);
+  const after = auditFields(options.delete ? null : options.merge && beforeSnap.exists()
+    ? { ...beforeSnap.data(), ...nextData } : nextData);
+  const batch = writeBatch(db);
+  if (options.delete) batch.delete(reference);
+  else batch.set(reference, nextData, options.merge ? { merge: true } : {});
+  if (!sameAuditValues(before, after)) {
+    const currentUser = auth.currentUser;
+    let actorRole = null;
+    if (currentUser?.email?.toLowerCase() === "editor@longcroft.local") {
+      actorRole = "admin";
+    } else if (currentUser?.uid) {
+      try {
+        const profile = await getDoc(doc(db, "users", currentUser.uid));
+        actorRole = profile.exists() ? (profile.data().role || null) : null;
+      } catch (error) {
+        console.warn("Could not resolve audit actor role", error);
+      }
+    }
+    batch.set(doc(collection(db, "auditLogs")), {
+      actorUid: currentUser?.uid || null,
+      actorEmail: currentUser?.email || null,
+      actorRole,
+      action: options.delete ? "delete" : beforeSnap.exists() ? "update" : "create",
+      targetPath: reference.path, category: reference.path.split("/")[0],
+      before, after, createdAt: serverTimestamp(),
+    });
+  }
+  await batch.commit();
+}
 
 const SHIFTS = ["Manager\n9am-5pm", "9am-5pm", "5pm-10pm", "10pm-9am"];
 
@@ -521,6 +575,34 @@ function RotaStaffPicker({ value = [], onChange, employees = [], label = "Staff 
 }
 
 function App() {
+  const [auditOpen, setAuditOpen] = useState(false);
+  const [auditEntries, setAuditEntries] = useState([]);
+  const [auditCursor, setAuditCursor] = useState(null);
+  const [auditBusy, setAuditBusy] = useState(false);
+  const [auditError, setAuditError] = useState("");
+  async function loadAuditEntries(reset = false) {
+    if (auditBusy) return;
+    setAuditBusy(true); setAuditError("");
+    try {
+      const parts = [orderBy("createdAt", "desc"), limit(40)];
+      if (!reset && auditCursor) parts.push(startAfter(auditCursor));
+      const snap = await getDocs(query(collection(db, "auditLogs"), ...parts));
+      setAuditEntries((prev) => reset ? snap.docs.map(d => ({ id:d.id,...d.data() })) :
+        [...prev, ...snap.docs.map(d => ({ id:d.id,...d.data() }))]);
+      setAuditCursor(snap.docs.length === 40 ? snap.docs[snap.docs.length-1] : null);
+    } catch (err) { setAuditError(err.message || "Could not load audit log."); }
+    finally { setAuditBusy(false); }
+  }
+  function exportAuditJson() {
+    const data = auditEntries.map(({ createdAt, ...rest }) => ({
+      ...rest, createdAt: createdAt?.toDate?.()?.toISOString?.() || null
+    }));
+    const blob = new Blob([JSON.stringify(data, null, 2)], {type:"application/json"});
+    const url = URL.createObjectURL(blob);
+    const link = document.createElement("a");
+    link.href = url; link.download = `rota-audit-${new Date().toISOString().slice(0,10)}.json`;
+    link.click(); URL.revokeObjectURL(url);
+  }
   const [weeks, setWeeks] = useState([]);
   const [selectedWeek, setSelectedWeek] = useState("");
   const [scheduledWeek, setScheduledWeek] = useState("");
@@ -1903,7 +1985,7 @@ function App() {
     setSicknessLoading(true);
     try {
       const reference = editingSicknessId ? doc(db, "sicknessAbsences", editingSicknessId) : doc(collection(db, "sicknessAbsences"));
-      await setDoc(reference, {
+      await auditedWrite(reference, {
         employeeId: employee.id, displayName: employee.displayName,
         startDate: sicknessStartDate, endDate: sicknessEndDate,
         absenceHoursByDate: confirmed, note: sicknessNote.trim(),
@@ -1920,7 +2002,7 @@ function App() {
   async function deleteSicknessAbsence(record) {
     if (!isAdmin || !window.confirm(`Delete sickness record for ${record.displayName}?`)) return;
     try {
-      await deleteDoc(doc(db, "sicknessAbsences", record.id));
+      await auditedWrite(doc(db, "sicknessAbsences", record.id), null, { delete: true });
       if (editingSicknessId === record.id) clearSicknessForm();
       await loadSicknessAbsences(); setPayrollPreview([]);
     } catch (error) { console.error(error); alert("Could not delete sickness record."); }
@@ -2010,7 +2092,7 @@ function App() {
       ? doc(db, "payrollAdjustments", adjustmentId)
       : doc(collection(db, "payrollAdjustments"));
 
-    await setDoc(ref, {
+    await auditedWrite(ref, {
       date: adjustmentDate,
       hours,
       note: adjustmentNote.trim(),
@@ -2028,7 +2110,7 @@ function App() {
   async function deletePayrollAdjustment(adjustment) {
     if (!isAdmin || !adjustment?.id) return;
     if (!window.confirm("Delete this payroll adjustment?")) return;
-    await deleteDoc(doc(db, "payrollAdjustments", adjustment.id));
+    await auditedWrite(doc(db, "payrollAdjustments", adjustment.id), null, { delete: true });
     if (editingAdjustmentId === adjustment.id) clearPayrollAdjustmentForm();
     await loadPayrollAdjustments();
     setPayrollPreview([]);
@@ -2105,7 +2187,7 @@ function App() {
     const ref = editingActualOverrideId
       ? doc(db, "payrollAdjustments", editingActualOverrideId)
       : doc(collection(db, "payrollAdjustments"));
-    await setDoc(ref, {
+    await auditedWrite(ref, {
       type: "actualHoursOverride",
       date: actualOverrideDate,
       hours,
@@ -2124,7 +2206,7 @@ function App() {
   async function deleteActualHoursOverride(override) {
     if (!isAdmin || !override?.id) return;
     if (!window.confirm("Delete this actual-hours override? Payroll will return to the rota-derived hours for that date.")) return;
-    await deleteDoc(doc(db, "payrollAdjustments", override.id));
+    await auditedWrite(doc(db, "payrollAdjustments", override.id), null, { delete: true });
     if (editingActualOverrideId === override.id) clearActualHoursOverrideForm();
     await loadPayrollAdjustments();
     setPayrollPreview([]);
@@ -3371,9 +3453,9 @@ function App() {
       };
 
       if (editingAnnualLeaveId) {
-        await setDoc(doc(db, "annualLeave", editingAnnualLeaveId), payload, { merge: true });
+        await auditedWrite(doc(db, "annualLeave", editingAnnualLeaveId), payload, { merge: true });
       } else {
-        await addDoc(collection(db, "annualLeave"), {
+        await auditedWrite(doc(collection(db, "annualLeave")), {
           ...payload,
           createdAt: new Date().toISOString(),
           createdBy: user?.email || "unknown",
@@ -3394,7 +3476,7 @@ function App() {
     if (!window.confirm("Delete this annual leave reminder?")) return;
 
     try {
-      await deleteDoc(doc(db, "annualLeave", leaveId));
+      await auditedWrite(doc(db, "annualLeave", leaveId), null, { delete: true });
       await loadAnnualLeave();
     } catch (error) {
       console.error("Failed to delete annual leave reminder:", error);
@@ -4140,7 +4222,7 @@ function App() {
     const baseShiftId = makeOverrideId(baseDayIndex, baseShift);
     const shiftCollection = baseTemplateWeek === 2 ? "week2Shifts" : "shifts";
 
-    await setDoc(
+    await auditedWrite(
       doc(db, "baseTemplateVersions", versionId, shiftCollection, baseShiftId),
       {
         dayIndex: Number(baseDayIndex),
@@ -4187,7 +4269,7 @@ function App() {
     const baseShiftId = makeOverrideId(baseDayIndex, baseShift);
     const shiftCollection = baseTemplateWeek === 2 ? "week2Shifts" : "shifts";
 
-    await setDoc(
+    await auditedWrite(
       doc(db, "baseTemplateVersions", versionId, shiftCollection, baseShiftId),
       {
         dayIndex: Number(baseDayIndex),
@@ -4259,7 +4341,7 @@ function App() {
 
     const overrideId = makeOverrideId(editDayIndex, editShift);
 
-    await setDoc(doc(db, "rotaWeeks", selectedWeek, "overrides", overrideId), {
+    await auditedWrite(doc(db, "rotaWeeks", selectedWeek, "overrides", overrideId), {
       dayIndex: Number(editDayIndex),
       shift: editShift,
       staff,
@@ -4280,7 +4362,7 @@ function App() {
 
     const overrideId = makeOverrideId(editDayIndex, editShift);
 
-    await deleteDoc(doc(db, "rotaWeeks", selectedWeek, "overrides", overrideId));
+    await auditedWrite(doc(db, "rotaWeeks", selectedWeek, "overrides", overrideId), null, { delete: true });
 
     setEditStaffText("");
     setEditVacantSlots(0);
@@ -4585,6 +4667,13 @@ function App() {
               </button>
             )}
 
+            {isAdmin && adminView === "payroll" && (
+              <button type="button" className="staff-audit-button" onClick={() => {
+                setAuditOpen(true);
+                loadAuditEntries(true);
+              }}>Audit Log</button>
+            )}
+
             {isAdmin && adminView !== "payroll" && (
               <button
                 type="button"
@@ -4610,6 +4699,42 @@ function App() {
             </button>
           </div>
         </div>
+          {isAdmin && auditOpen && <div className="audit-backdrop" onClick={() => setAuditOpen(false)}>
+            <section className="audit-dialog" role="dialog" aria-modal="true" aria-label="Audit log"
+              onClick={event => event.stopPropagation()}>
+              <header className="audit-header"><h2>Audit Log</h2>
+                <button type="button" onClick={() => setAuditOpen(false)}>Close</button></header>
+              <p>Changes made by editorial accounts appear here. Export will contain <b>only</b> currently loaded entries.</p>
+              <div className="audit-actions">
+                <button type="button" disabled={auditBusy} onClick={() => loadAuditEntries(true)}>Refresh</button>
+                <button type="button" disabled={!auditEntries.length} onClick={exportAuditJson}>Export loaded JSON</button>
+              </div>
+              {auditError && <p className="audit-error">{auditError}</p>}
+              <div className="audit-list">{auditEntries.map(entry =>
+                <article className="audit-item" key={entry.id}>
+                  <div className="audit-entry-date">{entry.createdAt?.toDate?.()?.toLocaleString("en-GB", { dateStyle: "medium", timeStyle: "medium" }) || "Pending"}</div>
+                  <div className="audit-entry-change">Change: <strong>{entry.action}</strong> — {entry.targetPath}</div>
+                  <small className="audit-entry-actor">{entry.actorEmail || entry.actorUid || "Unknown"}{(() => {
+                    if ((entry.actorEmail || "").trim().toLowerCase() === "editor@longcroft.local") {
+                      return " | admin";
+                    }
+                    const emailUsername = (entry.actorEmail || "").split("@")[0].toLowerCase();
+                    const matchedEmployee = employees.find(employee =>
+                      (entry.actorUid && employee.authUid === entry.actorUid) ||
+                      (emailUsername && employee.username?.toLowerCase() === emailUsername)
+                    );
+                    return matchedEmployee?.displayName ? ` | ${matchedEmployee.displayName}` : "";
+                  })()}</small>
+                  <details><summary>Before / after</summary>
+                    <pre>{JSON.stringify({before:entry.before,after:entry.after},null,2)}</pre>
+                  </details>
+                </article>)}
+                {!auditEntries.length && !auditBusy && <p>No audit entries found.</p>}
+              </div>
+              {auditCursor && <button type="button" disabled={auditBusy} onClick={() => loadAuditEntries(false)}>
+                {auditBusy ? "Loading…" : "Load 40 more"}
+              </button>}
+            </section></div>}
           <img
             src={lcMonogram}
             alt="LC Monogram"
@@ -5341,6 +5466,7 @@ function App() {
               <button type="button" onClick={() => setAdminView("weekly")}>
                 Back to Weekly Rota
               </button>
+
             </div>
 
             <section className="editor-panel payroll-period-panel">
