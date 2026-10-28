@@ -34,13 +34,13 @@ function auditFields(value) {
   if (!value) return null;
   const { staff, vacantSlots, active, status, effectiveFrom, patternLength,
     contractedHours, contractHistory, staffType, role, paidHours,
-    startDate, endDate, hours, date, shift, dayIndex, displayName,
+    startDate, endDate, hours, date, shift, dayIndex, note, displayName,
     archived, publishedEarly, weekStart, employeeId, employees, leaveHours,
     leaveHoursByDate, absenceHoursByDate, actualHours, staffName } = value;
   return Object.fromEntries(Object.entries({
     staff, vacantSlots, active, status, effectiveFrom, patternLength,
     contractedHours, contractHistory, staffType, role, paidHours,
-    startDate, endDate, hours, date, shift, dayIndex, displayName,
+    startDate, endDate, hours, date, shift, dayIndex, note, displayName,
     archived, publishedEarly, weekStart, employeeId, employees, leaveHours,
     leaveHoursByDate, absenceHoursByDate, actualHours, staffName
   }).filter(([, item]) => item !== undefined));
