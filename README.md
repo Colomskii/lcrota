@@ -54,20 +54,6 @@ npx netlify dev
 
 The `employee-account` function requires its configured server-side Firebase Admin credentials (including `FIREBASE_SERVICE_ACCOUNT_JSON` where applicable). Configure these securely in the appropriate Netlify environment; never place service-account JSON in the React source or repository.
 
-## Deployment
-
-The production site is deployed through a **GitHub-connected Netlify site**. After reviewing and testing changes locally:
-
-```bash
-git add -A
-git commit -m "Describe the change"
-git push
-```
-
-A push to the connected deployment branch (currently `main`) triggers the Netlify build and deployment. Confirm the deployment succeeded in Netlify and test the relevant workflow in the live app.
-
-Firebase Security Rules and Netlify environment variables are managed separately; pushing front-end code does **not** automatically publish Firestore rules or update production secrets.
-
 ## Access and security
 
 - Firebase Authentication handles sign-in.
