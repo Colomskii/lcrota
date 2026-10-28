@@ -1,0 +1,23 @@
+# Dependencies
+node_modules/
+
+# Production builds
+dist/
+
+# Local Netlify files
+.netlify/
+
+# Environment variables and secrets
+.env
+.env.*
+!.env.example
+
+# Firebase service account credentials
+*serviceAccount*.json
+*service-account*.json
+
+# Mac files
+.DS_Store
+
+# Debug logs
+*.log
