@@ -88,6 +88,23 @@ const PAYROLL_SHIFT_HOURS = {
   "10pm-9am": 11,
 };
 
+// Display-only rounding. Keep the underlying payroll calculations at full
+// precision; convert only when presenting hours in the table, PDF and UI.
+// Round the absolute value to make positive and negative halfway cases
+// symmetric, and normalise any negative/positive zero to a plain 0.
+function roundedPayrollDisplayHours(value) {
+  const numeric = Number(value);
+  if (!Number.isFinite(numeric)) return null;
+  const absolute = Math.round((Math.abs(numeric) + Number.EPSILON) * 100) / 100;
+  return absolute === 0 ? 0 : Math.sign(numeric) * absolute;
+}
+
+function formatPayrollHours(value, signed = false) {
+  const rounded = roundedPayrollDisplayHours(value);
+  if (rounded === null) return "—";
+  return `${signed && rounded > 0 ? "+" : ""}${rounded}h`;
+}
+
 
 const PREVIOUS_LIVE_WEEKS = 4;
 const FUTURE_LIVE_WEEKS = 7;
@@ -2520,6 +2537,22 @@ function App() {
     return Number(effective?.hours ?? employee.baselineContractedHours ?? employee.contractedHours ?? 0);
   }
 
+  function payrollWeekIdForDate(dateId) {
+    const day = parseLocalDate(dateId).getDay() || 7;
+    return toDateId(addDays(dateId, -(day - 1)));
+  }
+
+  function payrollWeekContractHours(employee, weekId) {
+    // The same day-effective, 1/7-per-day rule used for complete payroll weeks.
+    // This also handles contracts that change in the middle of a calendar week.
+    let hours = 0;
+    for (let index = 0; index < 7; index += 1) {
+      const dateId = toDateId(addDays(weekId, index));
+      hours += Math.max(0, contractHoursForDate(employee, dateId)) / 7;
+    }
+    return hours;
+  }
+
   async function buildPayrollContractAndLeaveHours(
     startDate,
     endDate,
@@ -2530,156 +2563,165 @@ function App() {
     const payrollAnnualLeave = isAdmin
       ? [...annualLeave, ...annualLeaveArchive]
       : annualLeave;
+    const baseRotaCache = new Map();
+    const startWeekId = payrollWeekIdForDate(startDate);
+    const endWeekId = payrollWeekIdForDate(endDate);
+    const lastCoveredDate = toDateId(addDays(endWeekId, 6));
 
     employeeList.forEach((employee) => {
       contractedHoursByEmployee.set(employee.id, 0);
       annualLeaveHoursByEmployee.set(employee.id, 0);
     });
 
-    const start = parseLocalDate(startDate);
-    const end = parseLocalDate(endDate);
-    const baseRotaCache = new Map();
-
-    for (
-      let cursor = new Date(start);
-      cursor <= end;
-      cursor.setDate(cursor.getDate() + 1)
-    ) {
-      const dateId = toDateId(cursor);
-      const dayOfWeek = cursor.getDay();
-      const dayIndex = dayOfWeek === 0 ? 7 : dayOfWeek;
-      const monday = new Date(cursor);
-      monday.setDate(cursor.getDate() - (dayIndex - 1));
-      const weekId = toDateId(monday);
-
-      let baseRota = baseRotaCache.get(weekId);
-      if (!baseRota) {
-        baseRota = await getBaseRotaForWeek(weekId);
-        baseRotaCache.set(weekId, baseRota);
-      }
-
-      SHIFTS.forEach((shift) => {
-        const shiftHours = PAYROLL_SHIFT_HOURS[shift];
-        if (!Number.isFinite(shiftHours)) return;
-
-        const baseStaff = baseRota?.[dayIndex]?.[shift]?.staff || [];
-
-        baseStaff.forEach((staffName) => {
-          const employee = resolvePayrollEmployee(staffName, employeeList);
-          if (!employee) return;
-
-          contractedHoursByEmployee.set(
-            employee.id,
-            (contractedHoursByEmployee.get(employee.id) || 0) + shiftHours
-          );
-
-          // Legacy fallback only: newer A/L records store confirmed paid hours
-          // explicitly in leaveHoursByDate and are added below.
-          const onLeave = payrollAnnualLeave.some(
-            (leave) =>
-              !leave?.leaveHoursByDate &&
-              resolvePayrollEmployee(leave.staffName, employeeList)?.id ===
-                employee.id && annualLeaveCoversDate(leave, dateId)
-          );
-
-          if (onLeave) {
-            annualLeaveHoursByEmployee.set(
-              employee.id,
-              (annualLeaveHoursByEmployee.get(employee.id) || 0) + shiftHours
-            );
-          }
-        });
-      });
+    // Read every calendar week that intersects the payroll period, once.
+    // Full-week context is necessary for a real weekly cap: capping each
+    // partial pay-period fragment independently can exceed the same weekly
+    // contract across two adjacent payroll periods.
+    for (let weekId = startWeekId; weekId <= endWeekId;
+      weekId = toDateId(addDays(weekId, 7))) {
+      baseRotaCache.set(weekId, await getBaseRotaForWeek(weekId));
     }
 
-    // New A/L records store confirmed paid leave hours by calendar date.
-    // These values are authoritative for payroll and do not depend on the
-    // base rota remaining representative of the employee's working pattern.
+    // A/L is accumulated BY CALENDAR WEEK, not for the payroll period as a
+    // whole. Confirmed daily values take precedence over legacy base-derived
+    // values, and each calendar week has its own effective contractual cap.
+    const leaveByEmployee = new Map();
+    const confirmedDates = new Set();
+    function creditLeave(employeeId, dateId, hours, source) {
+      if (dateId < startWeekId || dateId > lastCoveredDate ||
+          !Number.isFinite(hours) || hours <= 0) return;
+      let weeksForEmployee = leaveByEmployee.get(employeeId);
+      if (!weeksForEmployee) {
+        weeksForEmployee = new Map();
+        leaveByEmployee.set(employeeId, weeksForEmployee);
+      }
+      const weekId = payrollWeekIdForDate(dateId);
+      let dates = weeksForEmployee.get(weekId);
+      if (!dates) {
+        dates = new Map();
+        weeksForEmployee.set(weekId, dates);
+      }
+      const old = dates.get(dateId) || { confirmed: 0, legacy: 0 };
+      dates.set(dateId, { ...old, [source]: old[source] + hours });
+    }
+
+    // Confirmed A/L may include dates just outside the selected range but
+    // INSIDE the same Monday-Sunday week. Include those in the weekly cap,
+    // then credit only the dates belonging to this payroll period.
     payrollAnnualLeave.forEach((leave) => {
       if (!leave?.leaveHoursByDate) return;
       const employee = resolvePayrollEmployee(leave.staffName, employeeList);
       if (!employee) return;
-
       Object.entries(leave.leaveHoursByDate).forEach(([dateId, rawHours]) => {
-        if (dateId < startDate || dateId > endDate) return;
-        const hours = Number(rawHours);
-        if (!Number.isFinite(hours) || hours <= 0) return;
-        annualLeaveHoursByEmployee.set(
-          employee.id,
-          (annualLeaveHoursByEmployee.get(employee.id) || 0) + hours
-        );
+        if (dateId < startWeekId || dateId > lastCoveredDate) return;
+        confirmedDates.add(`${employee.id}|${dateId}`);
+        creditLeave(employee.id, dateId, Number(rawHours), "confirmed");
       });
     });
 
-    // Preserve explicit weekly contractual hours for complete Monday-Sunday
-    // weeks. Base-rota hours are used only for partial weeks, where a simple
-    // fraction of the weekly contract would be misleading.
-    const firstMonday =
-      start.getDay() === 1 ? new Date(start) : addDays(toDateId(start), 8 - (start.getDay() || 7));
-    const lastSunday =
-      end.getDay() === 0 ? new Date(end) : addDays(toDateId(end), -end.getDay());
-
-    let completeWeeks = 0;
-    if (firstMonday <= lastSunday) {
-      completeWeeks =
-        Math.floor((lastSunday - firstMonday) / (7 * 24 * 60 * 60 * 1000)) + 1;
-    }
-
-    employeeList.forEach((employee) => {
-      // Daily effective dates: prorate weekly contract across seven days.
-      // A midweek change therefore affects only the days from its effective date.
-      let fullWeekContractHours = 0;
-      for (let cursor = new Date(firstMonday); cursor <= lastSunday; cursor.setDate(cursor.getDate() + 1)) {
-        fullWeekContractHours += contractHoursForDate(employee, toDateId(cursor)) / 7;
-      }
-
-      let partialBaseHours = 0;
-      const rangeStart = parseLocalDate(startDate);
-      const rangeEnd = parseLocalDate(endDate);
-      for (let cursor = new Date(rangeStart); cursor <= rangeEnd; cursor.setDate(cursor.getDate() + 1)) {
-        const inCompleteWeek = firstMonday <= lastSunday && cursor >= firstMonday && cursor <= lastSunday;
-        if (inCompleteWeek) continue;
-
-        // Partial-week Base Rota shifts must not create contractual hours for
-        // a zero-hours employee. Check the contract effective on THIS date so
-        // historical zero-to-contracted (and contracted-to-zero) changes work.
-        // Keep the existing Base Rota method for non-zero-hour employees.
-        if (contractHoursForDate(employee, toDateId(cursor)) <= 0) continue;
-
-        const dayIndex = cursor.getDay() || 7;
-        const weekId = toDateId(addDays(toDateId(cursor), -(dayIndex - 1)));
-        const baseRota = baseRotaCache.get(weekId) || {};
+    // Older A/L records do not have confirmed daily values: fall back to
+    // that day's Base Rota shifts. Never add inferred hours on a date with
+    // an explicit modern record (even if its approved hours are zero).
+    for (let weekId = startWeekId; weekId <= endWeekId;
+      weekId = toDateId(addDays(weekId, 7))) {
+      const baseRota = baseRotaCache.get(weekId) || {};
+      for (let dayIndex = 1; dayIndex <= 7; dayIndex += 1) {
+        const dateId = toDateId(addDays(weekId, dayIndex - 1));
         SHIFTS.forEach((shift) => {
           const shiftHours = PAYROLL_SHIFT_HOURS[shift];
+          if (!Number.isFinite(shiftHours)) return;
           const baseStaff = baseRota?.[dayIndex]?.[shift]?.staff || [];
-          if (Number.isFinite(shiftHours) && baseStaff.some((staffName) =>
-            resolvePayrollEmployee(staffName, employeeList)?.id === employee.id)) partialBaseHours += shiftHours;
+          baseStaff.forEach((staffName) => {
+            const employee = resolvePayrollEmployee(staffName, employeeList);
+            if (!employee || confirmedDates.has(`${employee.id}|${dateId}`)) return;
+            const onLeave = payrollAnnualLeave.some((leave) =>
+              !leave?.leaveHoursByDate &&
+              resolvePayrollEmployee(leave.staffName, employeeList)?.id === employee.id &&
+              annualLeaveCoversDate(leave, dateId)
+            );
+            if (onLeave) creditLeave(employee.id, dateId, shiftHours, "legacy");
+          });
         });
       }
-      contractedHoursByEmployee.set(employee.id, fullWeekContractHours + partialBaseHours);
-    });
-
-    // Cap A/L credited in each complete Monday-Sunday payroll week at the
-    // employee's contracted weekly hours. This prevents regular overtime
-    // shifts that appear in the base rota from inflating full-week A/L.
-    //
-    // Partial-week A/L is intentionally left unchanged for now; its treatment
-    // can be refined separately once the desired business rule is agreed.
-    if (completeWeeks > 0) {
-      employeeList.forEach((employee) => {
-        let maximumLeaveHours = 0;
-        for (let cursor = new Date(firstMonday); cursor <= lastSunday; cursor.setDate(cursor.getDate() + 1)) {
-          maximumLeaveHours += contractHoursForDate(employee, toDateId(cursor)) / 7;
-        }
-        const currentLeaveHours = Number(
-          annualLeaveHoursByEmployee.get(employee.id) || 0
-        );
-        annualLeaveHoursByEmployee.set(
-          employee.id,
-          Math.min(currentLeaveHours, maximumLeaveHours)
-        );
-      });
     }
+
+    // Complete Monday-Sunday weeks use the registered weekly contract.
+    // Partial weeks use deterministic shift-by-shift allocation over the
+    // ENTIRE calendar week, Monday through Sunday, in SHIFTS order. Each
+    // eligible Base Rota shift receives up to its actual whole shift hours,
+    // stopping once the weekly contract is used up. This avoids artificial
+    // decimal hours from proportional allocation and ensures the same shift
+    // has the same allocation in adjacent payroll periods. A dated contract
+    // change partway through a week can still produce a fractional weekly
+    // allowance because payrollWeekContractHours prorates by calendar day;
+    // that separate, existing rule is deliberately preserved.
+    employeeList.forEach((employee) => {
+      let contractedTotal = 0;
+      let annualLeaveTotal = 0;
+      for (let weekId = startWeekId; weekId <= endWeekId;
+        weekId = toDateId(addDays(weekId, 7))) {
+        const weekEndId = toDateId(addDays(weekId, 6));
+        const weeklyContract = payrollWeekContractHours(employee, weekId);
+        const completeWeek = weekId >= startDate && weekEndId <= endDate;
+
+        if (completeWeek) {
+          contractedTotal += weeklyContract;
+        } else {
+          const baseRota = baseRotaCache.get(weekId) || {};
+          // Remove binary floating-point noise from the seven daily sevenths
+          // (e.g. 16/7 * 7 = 15.999999999999996). Retain genuine fractions
+          // from a midweek contract change or an explicitly fractional contract.
+          let remainingWeeklyContract = Math.max(0, Math.round(weeklyContract * 1e8) / 1e8);
+          for (let dayIndex = 1; dayIndex <= 7 && remainingWeeklyContract > 0; dayIndex += 1) {
+            const dateId = toDateId(addDays(weekId, dayIndex - 1));
+            // Bank/zero-hours dates cannot generate contractual hours.
+            if (contractHoursForDate(employee, dateId) <= 0) continue;
+            for (const shift of SHIFTS) {
+              if (remainingWeeklyContract <= 0) break;
+              const shiftHours = PAYROLL_SHIFT_HOURS[shift];
+              if (!Number.isFinite(shiftHours) || shiftHours <= 0) continue;
+              const baseStaff = baseRota?.[dayIndex]?.[shift]?.staff || [];
+              if (!baseStaff.some((name) =>
+                resolvePayrollEmployee(name, employeeList)?.id === employee.id)) continue;
+
+              // This allocation is stable regardless of the date range being
+              // calculated. For normal integer contracts, every allocation
+              // is a whole hour; only a fractional contractual entitlement
+              // (e.g. a midweek contract change) can leave a fraction.
+              const allocatedHours = Math.min(shiftHours, remainingWeeklyContract);
+              if (dateId >= startDate && dateId <= endDate) contractedTotal += allocatedHours;
+              remainingWeeklyContract = Math.max(0, remainingWeeklyContract - allocatedHours);
+            }
+          }
+        }
+
+        const leaveDates = leaveByEmployee.get(employee.id)?.get(weekId);
+        if (!leaveDates) continue;
+        const dates = [...leaveDates.entries()];
+        const confirmedTotal = dates.reduce((sum, [, hours]) => sum + hours.confirmed, 0);
+        const legacyTotal = dates.reduce((sum, [, hours]) => sum + hours.legacy, 0);
+
+        // A zero-hours worker may have separately accrued, explicitly
+        // approved paid leave. Do not fabricate leave from their Base Rota;
+        // retain confirmed paid hours because a zero-hours contract is not
+        // evidence of zero statutory holiday entitlement.
+        const confirmedAllowance = weeklyContract > 0
+          ? Math.min(confirmedTotal, weeklyContract)
+          : confirmedTotal;
+        const legacyAllowance = weeklyContract > 0
+          ? Math.min(legacyTotal, Math.max(0, weeklyContract - confirmedAllowance))
+          : 0;
+        const confirmedFactor = confirmedTotal > 0 ? confirmedAllowance / confirmedTotal : 0;
+        const legacyFactor = legacyTotal > 0 ? legacyAllowance / legacyTotal : 0;
+
+        dates.forEach(([dateId, hours]) => {
+          if (dateId < startDate || dateId > endDate) return;
+          annualLeaveTotal += hours.confirmed * confirmedFactor + hours.legacy * legacyFactor;
+        });
+      }
+      contractedHoursByEmployee.set(employee.id, contractedTotal);
+      annualLeaveHoursByEmployee.set(employee.id, annualLeaveTotal);
+    });
 
     return { contractedHoursByEmployee, annualLeaveHoursByEmployee };
   }
@@ -2874,15 +2916,15 @@ function App() {
       const body = payrollPreview.map((row) => [
         row.displayName,
         String(row.shiftsWorked),
-        `${row.workedHours}h`,
-        `${row.annualLeaveHours}h`,
-        ...(payrollPeriodHasSickness ? [`${row.sicknessHours}h`] : []),
+        formatPayrollHours(row.workedHours),
+        formatPayrollHours(row.annualLeaveHours),
+        ...(payrollPeriodHasSickness ? [formatPayrollHours(row.sicknessHours)] : []),
         ...(payrollPeriodHasAdjustments
-          ? [`${row.adjustmentHours > 0 ? "+" : ""}${row.adjustmentHours}h`]
+          ? [formatPayrollHours(row.adjustmentHours, true)]
           : []),
-        `${row.accountedHours}h`,
-        `${Number(row.contractedHours.toFixed(2))}h`,
-        `${row.varianceHours > 0 ? "+" : ""}${Number(row.varianceHours.toFixed(2))}h`,
+        formatPayrollHours(row.accountedHours),
+        formatPayrollHours(row.contractedHours),
+        formatPayrollHours(row.varianceHours, true),
       ]);
 
       autoTable(pdf, {
@@ -3436,10 +3478,12 @@ function App() {
       const weekId = toDateId(monday);
       weeklyTotals.set(weekId, (weeklyTotals.get(weekId) || 0) + Number(confirmedHoursByDate[dateId] || 0));
     });
-    const weeklyContract = Number(employee.contractedHours || 0);
     for (const [weekId, hours] of weeklyTotals) {
-      if (weeklyContract > 0 && hours > weeklyContract) {
-        alert(`A/L for W/C ${formatWeekCommencing(weekId)} totals ${hours}h, above ${employee.displayName}'s ${weeklyContract}h weekly contract.`);
+      const weeklyContract = payrollWeekContractHours(employee, weekId);
+      // Zero-hours staff may have independently accrued paid leave, which
+      // requires explicit confirmation rather than a base-rota inference.
+      if (weeklyContract > 0 && hours > weeklyContract + 1e-8) {
+        alert(`A/L for W/C ${formatWeekCommencing(weekId)} totals ${hours}h, above ${employee.displayName}'s ${Number(weeklyContract.toFixed(2))}h contract for that week.`);
         return;
       }
     }
@@ -5653,22 +5697,22 @@ function App() {
                           <td><strong>{row.displayName}</strong></td>
                           <td>{row.shiftsWorked}</td>
                           <td>
-                            {row.workedHours}h
+                            {formatPayrollHours(row.workedHours)}
                             {row.actualHoursOverrideDates?.length > 0 && (
-                              <div className="payroll-override-indicator" title={row.actualHoursOverrideDates.map((item) => `${formatAnnualLeaveDate(item.date)}: rota ${item.rotaHours}h → actual ${item.actualHours}h`).join("\n")}>
-                                Rota {row.rotaWorkedHours}h · overridden
+                              <div className="payroll-override-indicator" title={row.actualHoursOverrideDates.map((item) => `${formatAnnualLeaveDate(item.date)}: rota ${formatPayrollHours(item.rotaHours)} → actual ${formatPayrollHours(item.actualHours)}`).join("\n")}>
+                                Rota {formatPayrollHours(row.rotaWorkedHours)} · overridden
                               </div>
                             )}
                           </td>
-                          <td>{row.annualLeaveHours}h</td>
-                          {payrollPeriodHasSickness && <td title="Informational only; excluded from accounted hours">{row.sicknessHours}h</td>}
+                          <td>{formatPayrollHours(row.annualLeaveHours)}</td>
+                          {payrollPeriodHasSickness && <td title="Informational only; excluded from accounted hours">{formatPayrollHours(row.sicknessHours)}</td>}
                           {payrollPeriodHasAdjustments && (
-                            <td>{row.adjustmentHours > 0 ? "+" : ""}{row.adjustmentHours}h</td>
+                            <td>{formatPayrollHours(row.adjustmentHours, true)}</td>
                           )}
-                          <td>{row.accountedHours}h</td>
-                          <td>{Number(row.contractedHours.toFixed(2))}h</td>
-                          <td className={row.varianceHours > 0 ? "payroll-positive" : row.varianceHours < 0 ? "payroll-negative" : ""}>
-                            {row.varianceHours > 0 ? "+" : ""}{Number(row.varianceHours.toFixed(2))}h
+                          <td>{formatPayrollHours(row.accountedHours)}</td>
+                          <td>{formatPayrollHours(row.contractedHours)}</td>
+                          <td className={roundedPayrollDisplayHours(row.varianceHours) > 0 ? "payroll-positive" : roundedPayrollDisplayHours(row.varianceHours) < 0 ? "payroll-negative" : ""}>
+                            {formatPayrollHours(row.varianceHours, true)}
                           </td>
                         </tr>
                       ))}
@@ -6906,7 +6950,7 @@ function App() {
                         ))}
                       </div>
                       <div className="annual-leave-hours-total">
-                        Total paid A/L: <strong>{getAnnualLeaveDateIds().reduce((sum, dateId) => sum + Number(annualLeaveHoursByDate[dateId] || 0), 0)}h</strong>
+                        Total paid A/L: <strong>{formatPayrollHours(getAnnualLeaveDateIds().reduce((sum, dateId) => sum + Number(annualLeaveHoursByDate[dateId] || 0), 0))}</strong>
                       </div>
                     </div>
                   )}
