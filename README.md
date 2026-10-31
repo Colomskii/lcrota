@@ -31,29 +31,6 @@ Some functions and views are restricted by account role. Features are subject to
 | Server-side account operations | Netlify Functions |
 | PDF generation | jsPDF and jspdf-autotable |
 
-## Local development
-
-**Prerequisites:** Node.js and npm, plus access to the relevant Firebase project and environment configuration.
-
-```bash
-git clone <repository-url>
-cd lcrota
-npm install
-npm run dev
-```
-
-Vite will display the local development URL in the terminal.
-
-The front end requires Firebase configuration. Set it up using the project's existing configuration approach; do **not** commit secrets. Firebase web-app configuration identifiers are not equivalent to server credentials, but access must still be enforced through Firebase Authentication and Firestore Security Rules.
-
-For testing features backed by Netlify Functions, use the Netlify local development environment instead of assuming the Vite-only server will expose `/.netlify/functions/*`:
-
-```bash
-npx netlify dev
-```
-
-The `employee-account` function requires its configured server-side Firebase Admin credentials (including `FIREBASE_SERVICE_ACCOUNT_JSON` where applicable). Configure these securely in the appropriate Netlify environment; never place service-account JSON in the React source or repository.
-
 ## Access and security
 
 - Firebase Authentication handles sign-in.
