@@ -2639,6 +2639,13 @@ function App() {
       for (let cursor = new Date(rangeStart); cursor <= rangeEnd; cursor.setDate(cursor.getDate() + 1)) {
         const inCompleteWeek = firstMonday <= lastSunday && cursor >= firstMonday && cursor <= lastSunday;
         if (inCompleteWeek) continue;
+
+        // Partial-week Base Rota shifts must not create contractual hours for
+        // a zero-hours employee. Check the contract effective on THIS date so
+        // historical zero-to-contracted (and contracted-to-zero) changes work.
+        // Keep the existing Base Rota method for non-zero-hour employees.
+        if (contractHoursForDate(employee, toDateId(cursor)) <= 0) continue;
+
         const dayIndex = cursor.getDay() || 7;
         const weekId = toDateId(addDays(toDateId(cursor), -(dayIndex - 1)));
         const baseRota = baseRotaCache.get(weekId) || {};
