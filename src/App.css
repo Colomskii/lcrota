@@ -3218,3 +3218,134 @@ textarea::placeholder {
 .audit-entry-change { margin-bottom:6px; font-weight:400; }
 .audit-entry-change strong { display:inline; font-weight:700; margin:0; }
 .auth-actions .staff-audit-button { white-space:nowrap; }
+
+
+/* =========================
+   LIVE ROTA VACANCIES SIDEBAR
+   Reuses the Upcoming Shifts sidebar and list presentation.
+   ========================= */
+.vacancies-sidebar-toggle { white-space: nowrap; }
+.vacancies-refresh {
+  display: block;
+  width: 100%;
+  margin: 0 0 16px;
+  padding: 9px 12px;
+  font: inherit;
+  cursor: pointer;
+  border: 1px solid #c9bfae;
+  border-radius: 6px;
+  background: #fffdf8;
+  color: #222;
+}
+.vacancies-refresh:hover:not(:disabled) { background: #efe6d8; }
+.vacancies-refresh:disabled { opacity: .65; cursor: wait; }
+.vacancies-summary { margin: 0 0 15px; color: #555; text-align: center; }
+.vacancies-slot-count { color: #b00020; font-size: 14px; font-weight: 700; }
+.vacancies-error { color: #9d1c1c; }
+@media (max-width: 768px) {
+  .auth-actions .vacancies-sidebar-toggle { white-space: normal; }
+}
+@media print {
+  .vacancies-sidebar,
+  .vacancies-sidebar-backdrop,
+  .vacancies-sidebar-toggle { display: none !important; }
+}
+
+/* Admin / Senior header: the second row is part of the SAME two-column
+   grid as Print Rota and Logout, so each pair always shares its width.
+   The shift buttons are direct grid children (no display:contents wrapper). */
+.editor-mobile-shortcuts { display: none; }
+
+@media (min-width: 769px) {
+  .auth-bar { flex-wrap: wrap; gap: 10px 16px; }
+  .auth-actions.auth-actions-editor {
+    margin-left: auto;
+    flex: 0 0 auto;
+    flex-wrap: nowrap;
+    justify-content: flex-end;
+    align-items: flex-start;
+  }
+  .auth-actions-editor > .annual-leave-sidebar-toggle,
+  .auth-actions-editor > .payroll-button,
+  .auth-actions-editor > .staff-audit-button { white-space: nowrap; }
+
+  .auth-actions-editor .editor-right-actions {
+    display: grid;
+    grid-template-columns: max-content max-content;
+    grid-template-rows: auto auto;
+    gap: 8px 10px;
+    align-items: stretch;
+    flex: 0 0 auto;
+  }
+  .auth-actions-editor .editor-right-actions > .print-button {
+    grid-column: 1;
+    grid-row: 1;
+  }
+  .auth-actions-editor .editor-right-actions > .editor-logout-button {
+    grid-column: 2;
+    grid-row: 1;
+  }
+  .auth-actions-editor .editor-right-actions > .print-button,
+  .auth-actions-editor .editor-right-actions > .editor-logout-button {
+    box-sizing: border-box;
+    width: 100%;
+    white-space: nowrap;
+  }
+  .auth-actions-editor .editor-right-actions > .upcoming-shifts-sidebar-toggle:not(.vacancies-sidebar-toggle) {
+    grid-column: 1;
+    grid-row: 2;
+  }
+  .auth-actions-editor .editor-right-actions > .vacancies-sidebar-toggle {
+    grid-column: 2;
+    grid-row: 2;
+  }
+  .auth-actions-editor .editor-right-actions > .upcoming-shifts-sidebar-toggle {
+    box-sizing: border-box;
+    width: 100%;
+    min-width: 0;
+    min-height: 32px;
+    margin: 0;
+    padding: 6px 12px;
+    border: 1px solid #707070;
+    border-radius: 5px;
+    background: #686868;
+    color: #fff;
+    font: inherit;
+    font-size: 13px;
+    font-weight: 400;
+    line-height: 1.2;
+    white-space: nowrap;
+    cursor: pointer;
+  }
+  .auth-actions-editor .editor-right-actions > .upcoming-shifts-sidebar-toggle:hover {
+    background: #565656;
+  }
+  .auth-actions-editor .editor-right-actions > .upcoming-shifts-sidebar-toggle:focus-visible {
+    outline: 3px solid #2b6cb0;
+    outline-offset: 2px;
+  }
+}
+
+/* Keep the previously approved mobile navigation exactly in one row:
+   Annual Leave | Shifts | Vacancies | Staff | Print Rota | Logout.
+   The desktop-only grid shortcuts are hidden; the mobile copies remain. */
+@media (max-width: 768px) {
+  .auth-actions.auth-actions-editor {
+    flex-wrap: nowrap;
+    justify-content: flex-start;
+    align-items: stretch;
+    gap: 4px;
+  }
+  .auth-actions-editor .editor-right-actions,
+  .auth-actions-editor .editor-mobile-shortcuts { display: contents; }
+  .auth-actions-editor .editor-right-actions > .upcoming-shifts-sidebar-toggle {
+    display: none;
+  }
+}
+
+@media print {
+  .editor-mobile-shortcuts,
+  .auth-actions-editor .editor-right-actions > .upcoming-shifts-sidebar-toggle {
+    display: none !important;
+  }
+}

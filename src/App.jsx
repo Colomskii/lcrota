@@ -688,6 +688,11 @@ function App() {
   const [showPreviousShifts, setShowPreviousShifts] = useState(false);
   const [viewerUpcomingShiftsLoading, setViewerUpcomingShiftsLoading] = useState(false);
   const [upcomingShiftsSidebarOpen, setUpcomingShiftsSidebarOpen] = useState(false);
+  const [vacanciesSidebarOpen, setVacanciesSidebarOpen] = useState(false);
+  const [liveVacancies, setLiveVacancies] = useState([]);
+  const [liveVacanciesLoading, setLiveVacanciesLoading] = useState(false);
+  const [liveVacanciesError, setLiveVacanciesError] = useState("");
+  const vacanciesRequestRef = useRef(0);
   const [userProfile, setUserProfile] = useState(null);
   const [userProfileLoading, setUserProfileLoading] = useState(false);
   const [payrollWeek, setPayrollWeek] = useState("");
@@ -2509,6 +2514,71 @@ function App() {
     return buildFlattenedArchiveDays(weekId, baseRota, overrideData, liveWeek.dayNotes || {});
   }
 
+  // Vacancies are read from published live weeks, never scheduled drafts or archives.
+  // A saved weekly override takes precedence over the applicable dated base rota.
+  async function loadLiveVacancies() {
+    const requestId = ++vacanciesRequestRef.current;
+    setLiveVacanciesLoading(true);
+    setLiveVacanciesError("");
+
+    try {
+      // Fetch the week register again: another senior may have published a week
+      // since the current employee signed in.
+      const currentLiveWeeks = await loadWeeks();
+      const todayId = toDateId(new Date());
+      const currentMonday = getCurrentMondayId();
+      const newestRollingWeek = getNewestLiveWeekId();
+
+      const availableLiveWeeks = currentLiveWeeks
+        .filter((week) => {
+          const weekId = normaliseWeekId(week);
+          return Boolean(weekId) &&
+            weekId >= currentMonday &&
+            week.status !== "draft" &&
+            week.status !== "archived" &&
+            (weekId <= newestRollingWeek || week.status === "published-early");
+        })
+        .sort((a, b) => normaliseWeekId(a).localeCompare(normaliseWeekId(b)));
+
+      const resolvedWeeks = await Promise.all(availableLiveWeeks.map(async (week) => {
+        const weekId = normaliseWeekId(week);
+        const [baseRota, { overrideData }] = await Promise.all([
+          getBaseRotaForWeek(weekId),
+          loadOverridesForWeek(weekId),
+        ]);
+        return buildFlattenedArchiveDays(weekId, baseRota, overrideData, week.dayNotes || {});
+      }));
+
+      const vacancies = [];
+      resolvedWeeks.flat().forEach((day) => {
+        if (!day?.date || day.date < todayId) return;
+        (day.shifts || []).forEach((shiftEntry) => {
+          const vacantSlots = Math.max(0, Math.floor(Number(shiftEntry.vacantSlots) || 0));
+          if (vacantSlots === 0) return;
+          vacancies.push({
+            date: day.date,
+            shift: shiftEntry.shift,
+            sortOrder: shiftEntry.sortOrder ?? SHIFTS.indexOf(shiftEntry.shift),
+            vacantSlots,
+            note: shiftEntry.note || "",
+            dayNote: day.dayNote || "",
+          });
+        });
+      });
+      vacancies.sort((a, b) => a.date.localeCompare(b.date) || a.sortOrder - b.sortOrder);
+
+      if (requestId === vacanciesRequestRef.current) setLiveVacancies(vacancies);
+    } catch (error) {
+      console.error("Failed to load live vacancies:", error);
+      if (requestId === vacanciesRequestRef.current) {
+        setLiveVacancies([]);
+        setLiveVacanciesError("Could not retrieve vacancies from the live rotas. Please try again.");
+      }
+    } finally {
+      if (requestId === vacanciesRequestRef.current) setLiveVacanciesLoading(false);
+    }
+  }
+
   function getPayrollWeekIdsForDateRange(startDate, endDate) {
     if (!startDate || !endDate || endDate < startDate) return [];
 
@@ -3784,6 +3854,11 @@ function App() {
       setPayrollPeriodLabel("");
       setAnnualLeaveSidebarOpen(false);
       setAnnualLeaveLoading(false);
+      setVacanciesSidebarOpen(false);
+      setLiveVacancies([]);
+      setLiveVacanciesError("");
+      setLiveVacanciesLoading(false);
+      vacanciesRequestRef.current += 1;
       setArchiveWeeks([]);
       setSelectedArchiveWeek("");
       setArchiveLoading(false);
@@ -4671,6 +4746,38 @@ function App() {
     </section></main>;
   }
 
+  // One set of shift shortcuts, positioned differently for editors and staff.
+  const shiftSidebarButtons = (adminView === "weekly" || adminView === "base" || adminView === "payroll") ? (
+    <>
+      <button
+        type="button"
+        className="upcoming-shifts-sidebar-toggle"
+        onClick={() => {
+          setVacanciesSidebarOpen(false);
+          setUpcomingShiftsSidebarOpen(true);
+          if (hasPersonalUpcomingShifts && linkedEmployeeId) {
+            loadViewerUpcomingShifts(linkedEmployeeId);
+          }
+        }}
+      >
+        <span className="upcoming-shifts-label-desktop">Upcoming Shifts</span>
+        <span className="upcoming-shifts-label-mobile">Shifts</span>
+      </button>
+      <button
+        type="button"
+        className="upcoming-shifts-sidebar-toggle vacancies-sidebar-toggle"
+        onClick={() => {
+          setUpcomingShiftsSidebarOpen(false);
+          setAnnualLeaveSidebarOpen(false);
+          setVacanciesSidebarOpen(true);
+          loadLiveVacancies();
+        }}
+      >
+        Vacancies
+      </button>
+    </>
+  ) : null;
+
   return (
     <main className="page">
       <section className="rota-paper">
@@ -4686,12 +4793,12 @@ function App() {
                     : userProfile?.displayName || userProfile?.username || accountRole}
               </strong>
             </span>
-          <div className="auth-actions">
+          <div className={`auth-actions ${isEditor ? "auth-actions-editor" : ""}`}>
             {!isIndividualStaff && (adminView === "weekly" || adminView === "base" || adminView === "payroll") && (
               <button
                 type="button"
                 className="annual-leave-sidebar-toggle"
-                onClick={() => setAnnualLeaveSidebarOpen(true)}
+                onClick={() => { setVacanciesSidebarOpen(false); setAnnualLeaveSidebarOpen(true); }}
               >
                 Annual Leave
                 {upcomingAnnualLeave.length > 0 && (
@@ -4702,21 +4809,10 @@ function App() {
               </button>
             )}
 
-            {(adminView === "weekly" || adminView === "base" || adminView === "payroll") && (
-              <button
-                type="button"
-                className="upcoming-shifts-sidebar-toggle"
-                onClick={() => {
-                  setUpcomingShiftsSidebarOpen(true);
-                  if (hasPersonalUpcomingShifts && linkedEmployeeId) {
-                    loadViewerUpcomingShifts(linkedEmployeeId);
-                  }
-                }}
-              >
-                <span className="upcoming-shifts-label-desktop">Upcoming Shifts</span>
-                <span className="upcoming-shifts-label-mobile">Shifts</span>
-              </button>
+            {isEditor && shiftSidebarButtons && (
+              <span className="editor-mobile-shortcuts">{shiftSidebarButtons}</span>
             )}
+            {!isEditor && shiftSidebarButtons}
 
             {isAdmin && adminView === "payroll" && (
               <button type="button" className="staff-audit-button" onClick={() => {
@@ -4735,19 +4831,28 @@ function App() {
               </button>
             )}
 
-            {adminView !== "payroll" && (
-              <button
-                type="button"
-                onClick={handlePrint}
-                className="print-button"
-              >
-                Print Rota
-              </button>
+            {isEditor ? (
+              <div className={`editor-right-actions ${shiftSidebarButtons ? "has-shift-shortcuts" : ""}`}>
+                {adminView !== "payroll" && (
+                  <button type="button" onClick={handlePrint} className="print-button">
+                    Print Rota
+                  </button>
+                )}
+                <button type="button" className="editor-logout-button" onClick={logout}>
+                  Logout
+                </button>
+                {shiftSidebarButtons}
+              </div>
+            ) : (
+              <>
+                {adminView !== "payroll" && (
+                  <button type="button" onClick={handlePrint} className="print-button">
+                    Print Rota
+                  </button>
+                )}
+                <button type="button" onClick={logout}>Logout</button>
+              </>
             )}
-
-            <button type="button" onClick={logout}>
-              Logout
-            </button>
           </div>
         </div>
           {isAdmin && auditOpen && <div className="audit-backdrop" onClick={() => setAuditOpen(false)}>
@@ -6771,6 +6876,72 @@ function App() {
                   )}
                 </>
               ) : null}
+            </div>
+          </aside>
+        </>
+      )}
+
+      {(adminView === "weekly" || adminView === "base" || adminView === "payroll") && vacanciesSidebarOpen && (
+        <>
+          <div
+            className="upcoming-shifts-sidebar-backdrop vacancies-sidebar-backdrop"
+            onClick={() => setVacanciesSidebarOpen(false)}
+          />
+          <aside className="upcoming-shifts-sidebar vacancies-sidebar" role="dialog" aria-modal="true" aria-label="Vacant shifts">
+            <div className="upcoming-shifts-sidebar-header">
+              <div>
+                <h2>Vacancies</h2>
+                <p>Unfilled shifts on published live rotas, from today onwards.</p>
+              </div>
+              <button
+                type="button"
+                className="upcoming-shifts-close"
+                onClick={() => setVacanciesSidebarOpen(false)}
+                aria-label="Close vacancies"
+              >
+                ×
+              </button>
+            </div>
+            <div className="upcoming-shifts-sidebar-content">
+              <button type="button" className="vacancies-refresh" onClick={loadLiveVacancies} disabled={liveVacanciesLoading}>
+                {liveVacanciesLoading ? "Refreshing…" : "Refresh Vacancies"}
+              </button>
+              {liveVacanciesLoading ? (
+                <p className="viewer-shifts-status" role="status">Loading live vacancies…</p>
+              ) : liveVacanciesError ? (
+                <p className="viewer-shifts-status vacancies-error" role="alert">{liveVacanciesError}</p>
+              ) : liveVacancies.length === 0 ? (
+                <p className="viewer-shifts-status">No vacant shifts found on the available live rotas.</p>
+              ) : (
+                <>
+                  <p className="vacancies-summary">
+                    <strong>{liveVacancies.reduce((total, vacancy) => total + vacancy.vacantSlots, 0)}</strong>
+                    {" "}open {liveVacancies.reduce((total, vacancy) => total + vacancy.vacantSlots, 0) === 1 ? "slot" : "slots"}
+                    {" "}across {liveVacancies.length} {liveVacancies.length === 1 ? "shift" : "shifts"}
+                  </p>
+                  <div className="viewer-shift-list">
+                    {liveVacancies.map((item) => (
+                      <article className="viewer-shift-item" key={`vacancy-${item.date}-${item.shift}`}>
+                        <div className="viewer-shift-date">
+                          <strong>
+                            {new Date(`${item.date}T12:00:00`).toLocaleDateString("en-GB", {
+                              weekday: "short", day: "numeric", month: "short", year: "numeric",
+                            })}
+                          </strong>
+                        </div>
+                        <div className="viewer-shift-details">
+                          <span className="viewer-shift-name">{item.shift.replace("\n", " ")}</span>
+                          <span className="vacancies-slot-count">VACANT x{item.vacantSlots}</span>
+                          {item.note && <span className="viewer-shift-note">{item.note}</span>}
+                          {item.dayNote && item.dayNote !== item.note && (
+                            <span className="viewer-shift-note">Day note: {item.dayNote}</span>
+                          )}
+                        </div>
+                      </article>
+                    ))}
+                  </div>
+                </>
+              )}
             </div>
           </aside>
         </>
