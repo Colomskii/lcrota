@@ -4747,7 +4747,7 @@ function App() {
   }
 
   // One set of shift shortcuts, positioned differently for editors and staff.
-  const shiftSidebarButtons = (adminView === "weekly" || adminView === "base" || adminView === "payroll") ? (
+  const shiftSidebarButtons = (adminView === "weekly" || adminView === "base") ? (
     <>
       <button
         type="button"
@@ -4793,7 +4793,7 @@ function App() {
                     : userProfile?.displayName || userProfile?.username || accountRole}
               </strong>
             </span>
-          <div className={`auth-actions ${isEditor ? "auth-actions-editor" : ""}`}>
+          <div className={`auth-actions ${isEditor && adminView !== "payroll" ? "auth-actions-editor" : ""}`}>
             {!isIndividualStaff && (adminView === "weekly" || adminView === "base" || adminView === "payroll") && (
               <button
                 type="button"
@@ -4831,7 +4831,7 @@ function App() {
               </button>
             )}
 
-            {isEditor ? (
+            {isEditor && adminView !== "payroll" ? (
               <div className={`editor-right-actions ${shiftSidebarButtons ? "has-shift-shortcuts" : ""}`}>
                 {adminView !== "payroll" && (
                   <button type="button" onClick={handlePrint} className="print-button">
@@ -6741,7 +6741,7 @@ function App() {
         )}
       </section>
 
-      {(adminView === "weekly" || adminView === "base" || adminView === "payroll") && upcomingShiftsSidebarOpen && (
+      {(adminView === "weekly" || adminView === "base") && upcomingShiftsSidebarOpen && (
         <>
           <div
             className="upcoming-shifts-sidebar-backdrop"
@@ -6881,7 +6881,7 @@ function App() {
         </>
       )}
 
-      {(adminView === "weekly" || adminView === "base" || adminView === "payroll") && vacanciesSidebarOpen && (
+      {(adminView === "weekly" || adminView === "base") && vacanciesSidebarOpen && (
         <>
           <div
             className="upcoming-shifts-sidebar-backdrop vacancies-sidebar-backdrop"
@@ -6890,8 +6890,8 @@ function App() {
           <aside className="upcoming-shifts-sidebar vacancies-sidebar" role="dialog" aria-modal="true" aria-label="Vacant shifts">
             <div className="upcoming-shifts-sidebar-header">
               <div>
-                <h2>Vacancies</h2>
-                <p>Unfilled shifts on published live rotas, from today onwards.</p>
+                <h2 style={{ color: "#555" }}>Shift Vacancies</h2>
+                <p>Unfilled shifts on published live rotas. Contact senior staff to claim a shift.</p>
               </div>
               <button
                 type="button"
