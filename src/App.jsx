@@ -6,8 +6,9 @@ import autoTable from "jspdf-autotable";
 import {
   collection,
   addDoc,
-  getDocs,
-  getDoc,
+  getDocs as firestoreGetDocs,
+  getDocsFromServer as firestoreGetDocsFromServer,
+  getDoc as firestoreGetDoc,
   query,
   orderBy,
   doc,
@@ -27,6 +28,23 @@ import {
 import { db, auth } from "./firebase";
 import "./App.css";
 import lcMonogram from "./assets/lc-monogram.png";
+
+// Firestore may leave a server read pending indefinitely when mobile Safari
+// resumes after a weak/interrupted connection. Bound *reads* so UI recovery
+// is possible. A timed-out read does not cancel the SDK operation; its result
+// is simply never used by the awaiting application code.
+const FIRESTORE_READ_TIMEOUT_MS = 12000;
+const VACANCIES_LOAD_TIMEOUT_MS = 24000;
+function withReadDeadline(promise, label, timeoutMs = FIRESTORE_READ_TIMEOUT_MS) {
+  let timer;
+  const deadline = new Promise((_, reject) => {
+    timer = setTimeout(() => reject(new Error(`${label} timed out. Check your connection and retry.`)), timeoutMs);
+  });
+  return Promise.race([promise, deadline]).finally(() => clearTimeout(timer));
+}
+const getDocs = (...args) => withReadDeadline(firestoreGetDocs(...args), "Firestore collection read");
+const getServerDocs = (...args) => withReadDeadline(firestoreGetDocsFromServer(...args), "Live server read");
+const getDoc = (...args) => withReadDeadline(firestoreGetDoc(...args), "Firestore document read");
 
 // Compact audit helpers. A tracked write and its log are committed atomically.
 // These client-side helpers do not prevent bypass via direct Firestore writes.
@@ -673,6 +691,12 @@ function App() {
   const [editingEmployeeId, setEditingEmployeeId] = useState("");
   const [employeeEditorOpen, setEmployeeEditorOpen] = useState(false);
   const [staffArchiveOpen, setStaffArchiveOpen] = useState(false);
+  const [archiveCandidate, setArchiveCandidate] = useState(null);
+  const [archiveDisableLogin, setArchiveDisableLogin] = useState(false);
+  const [archiveSubmitting, setArchiveSubmitting] = useState(false);
+  const [archiveError, setArchiveError] = useState("");
+  const [archiveLoginDisabled, setArchiveLoginDisabled] = useState(false);
+  const archiveSubmittingRef = useRef(false);
   const [accountEmployee, setAccountEmployee] = useState(null);
   const [accountUsername, setAccountUsername] = useState("");
   const [accountRoleDraft, setAccountRoleDraft] = useState("staff");
@@ -693,6 +717,15 @@ function App() {
   const [liveVacanciesLoading, setLiveVacanciesLoading] = useState(false);
   const [liveVacanciesError, setLiveVacanciesError] = useState("");
   const vacanciesRequestRef = useRef(0);
+  const [weekReadErrors, setWeekReadErrors] = useState({ base: "", overrides: "" });
+  const [weekLoadSlow, setWeekLoadSlow] = useState(false);
+  const [weekLoadStage, setWeekLoadStage] = useState("");
+  const weekLoadStartedAtRef = useRef(0);
+  const [weekLoadAttempt, setWeekLoadAttempt] = useState(0);
+  const [baseVersionsInitialised, setBaseVersionsInitialised] = useState(false);
+  const baseWeekRequestRef = useRef(0);
+  const overridesWeekRequestRef = useRef(0);
+  const selectedWeekRef = useRef("");
   const [userProfile, setUserProfile] = useState(null);
   const [userProfileLoading, setUserProfileLoading] = useState(false);
   const [payrollWeek, setPayrollWeek] = useState("");
@@ -772,6 +805,7 @@ function App() {
   const isIndividualStaff = Boolean(user && !isLegacyAdmin && !isLegacyViewer && !isEditor);
   const hasPersonalUpcomingShifts = Boolean(user && !isLegacyAdmin && !isLegacyViewer && !isAdmin);
   const linkedEmployeeId = userProfile?.employeeId || "";
+  selectedWeekRef.current = selectedWeek;
   const currentWeekId = getCurrentMondayId();
   const DEV = import.meta.env.DEV;
   const INACTIVITY_TIMEOUT = DEV
@@ -797,7 +831,7 @@ function App() {
 
   // Each independent section reports its own status; a failed optional request
   // must never be mistaken for an empty, successfully loaded dataset.
-  async function loadSection(key, loader, { retries = 2 } = {}) {
+  async function loadSection(key, loader, { retries = 1 } = {}) {
     if (secondaryRequestsRef.current[key]) return secondaryRequestsRef.current[key];
     const generation = loadingGenerationRef.current;
     const task = (async () => {
@@ -856,24 +890,22 @@ function App() {
     </div>;
   }
 
-  async function loadWeeks() {
-    const snapshot = await getDocs(collection(db, "rotaWeeks"));
-
-    const loadedWeeks = snapshot.docs
+  // A sidebar can obtain a fresh week register without changing the active
+  // weekly editor or kicking off a second wave of React loading effects.
+  async function readWeeks(serverOnly = false) {
+    const snapshot = await (serverOnly ? getServerDocs : getDocs)(collection(db, "rotaWeeks"));
+    return snapshot.docs
       .map((weekDoc) => {
         const data = weekDoc.data();
-        const weekStart =
-          data.weekStart || data.weekCommencing || weekDoc.id;
-
-        return {
-          id: weekDoc.id,
-          ...data,
-          weekStart,
-        };
+        const weekStart = data.weekStart || data.weekCommencing || weekDoc.id;
+        return { id: weekDoc.id, ...data, weekStart };
       })
       .filter((week) => week.weekStart)
       .sort((a, b) => a.weekStart.localeCompare(b.weekStart));
+  }
 
+  async function loadWeeks() {
+    const loadedWeeks = await readWeeks();
     setWeeks(loadedWeeks);
     return loadedWeeks;
   }
@@ -1179,30 +1211,37 @@ function App() {
     return rotaData;
   }
 
-  async function loadLegacyBaseRota() {
-    const snapshot = await getDocs(
+  async function loadLegacyBaseRota(serverOnly = false) {
+    const snapshot = await (serverOnly ? getServerDocs : getDocs)(
       collection(db, "baseTemplate", "originalPattern", "shifts")
     );
 
     return snapshotToRota(snapshot);
   }
 
-  async function loadBaseVersions() {
-    const snapshot = await getDocs(collection(db, "baseTemplateVersions"));
-    const versions = snapshot.docs
+  async function readBaseVersions(serverOnly = false) {
+    const snapshot = await (serverOnly ? getServerDocs : getDocs)(collection(db, "baseTemplateVersions"));
+    return snapshot.docs
       .map((versionDoc) => ({ id: versionDoc.id, ...versionDoc.data() }))
       .filter((version) => version.effectiveFrom)
       .sort((a, b) => a.effectiveFrom.localeCompare(b.effectiveFrom));
+  }
 
-    setBaseVersions(versions);
+  async function loadBaseVersions() {
+    const versions = await readBaseVersions();
+    // Avoid re-loading the current rota on every housekeeping refresh when
+    // the version metadata hasn't changed. A base shift edit explicitly
+    // reloads its affected week after saving.
+    setBaseVersions((previous) => JSON.stringify(previous) === JSON.stringify(versions) ? previous : versions);
+    setBaseVersionsInitialised(true);
     return versions;
   }
 
-  async function loadVersionRota(versionId, templateWeek = 1) {
+  async function loadVersionRota(versionId, templateWeek = 1, serverOnly = false) {
     // Backwards compatibility: existing versions keep Week 1 in /shifts.
     // Two-week versions store Week 2 in /week2Shifts.
     const subcollection = templateWeek === 2 ? "week2Shifts" : "shifts";
-    const snapshot = await getDocs(
+    const snapshot = await (serverOnly ? getServerDocs : getDocs)(
       collection(db, "baseTemplateVersions", versionId, subcollection)
     );
 
@@ -1229,17 +1268,27 @@ function App() {
       .sort((a, b) => b.effectiveFrom.localeCompare(a.effectiveFrom))[0] || null;
   }
 
-  async function getBaseRotaForWeek(weekId, versions = baseVersions) {
+  async function getBaseRotaForWeek(weekId, versions = baseVersions, serverOnly = false) {
     const applicableVersion = findApplicableBaseVersion(weekId, versions);
 
     if (applicableVersion) {
       const templateWeek = getTemplateWeekForCalendarWeek(weekId, applicableVersion);
-      return loadVersionRota(applicableVersion.id, templateWeek);
+      return loadVersionRota(applicableVersion.id, templateWeek, serverOnly);
     }
 
-    return loadLegacyBaseRota();
+    return loadLegacyBaseRota(serverOnly);
   }
 
+  // During a multi-week read, the same dated template usually serves many
+  // weeks. Share each template's in-flight read *within that refresh only*.
+  // Never retain it across refreshes: changed base rotas must remain visible.
+  function getBaseRotaCachedForWeek(weekId, cache, versions = baseVersions, serverOnly = false) {
+    const version = findApplicableBaseVersion(weekId, versions);
+    const templateWeek = version ? getTemplateWeekForCalendarWeek(weekId, version) : 1;
+    const key = version ? `${version.id}:${templateWeek}` : "legacy-originalPattern";
+    if (!cache.has(key)) cache.set(key, getBaseRotaForWeek(weekId, versions, serverOnly));
+    return cache.get(key);
+  }
 
   async function loadArchiveWeeks() {
     if (!isEditor) {
@@ -1445,35 +1494,88 @@ function App() {
     return toDateId(cutoff);
   }
 
-  async function archiveEmployee(employee) {
-    if (!isAdmin || !employee?.id) return;
-    if (!window.confirm(`Archive ${employee.displayName}? They will be removed from the current Staff register but retained for historical rota and payroll calculations.`)) return;
+  function openArchiveEmployeeDialog(employee) {
+    if (!isAdmin || !employee?.id || archiveSubmittingRef.current) return;
+    setArchiveCandidate(employee);
+    setArchiveDisableLogin(false); // Never disable access without an explicit choice.
+    setArchiveLoginDisabled(false);
+    setArchiveError("");
+  }
 
-    const now = new Date().toISOString();
+  function closeArchiveEmployeeDialog() {
+    if (archiveSubmittingRef.current) return;
+    setArchiveCandidate(null);
+    setArchiveDisableLogin(false);
+    setArchiveLoginDisabled(false);
+    setArchiveError("");
+  }
+
+  async function archiveEmployee(employee, disableLogin = false) {
+    if (!isAdmin || !employee?.id || archiveSubmittingRef.current) return;
+    if (disableLogin && employee.authUid === user?.uid) {
+      setArchiveError("You cannot disable the account you are currently using.");
+      return;
+    }
+    archiveSubmittingRef.current = true;
+    setArchiveSubmitting(true);
+    setArchiveError("");
+
+    let disabledInThisOperation = archiveLoginDisabled;
     try {
-      await Promise.all([
-        setDoc(doc(db, "employees", employee.id), {
-          archived: true,
-          archivedAt: now,
-          archivedBy: user?.email || "unknown",
-          active: false,
-          updatedAt: now,
-          updatedBy: user?.email || "unknown",
-        }, { merge: true }),
-        setDoc(doc(db, "staffDirectory", employee.id), {
-          displayName: employee.displayName || "",
-          aliases: employee.aliases || [],
-          active: false,
-          archived: true,
-          updatedAt: now,
-        }, { merge: true }),
-      ]);
+      // Disable first: if that fails, do NOT archive and leave a live account
+      // behind under the mistaken impression it has been disabled.
+      if (disableLogin && employee.authUid && employee.accountEnabled !== false && !disabledInThisOperation) {
+        await callEmployeeAccountAction("updateAccess", {
+          employeeId: employee.id,
+          role: employee.accountRole || "staff",
+          accountEnabled: false,
+        });
+        disabledInThisOperation = true;
+        setArchiveLoginDisabled(true);
+      }
+
+      // Both Firestore employee records must be archived atomically.
+      const now = new Date().toISOString();
+      const batch = writeBatch(db);
+      batch.set(doc(db, "employees", employee.id), {
+        archived: true,
+        archivedAt: now,
+        archivedBy: user?.email || "unknown",
+        active: false,
+        ...(disabledInThisOperation || employee.accountEnabled === false ? { accountEnabled: false } : {}),
+        updatedAt: now,
+        updatedBy: user?.email || "unknown",
+      }, { merge: true });
+      batch.set(doc(db, "staffDirectory", employee.id), {
+        displayName: employee.displayName || "",
+        aliases: employee.aliases || [],
+        active: false,
+        archived: true,
+        updatedAt: now,
+      }, { merge: true });
+      await batch.commit();
+
       if (editingEmployeeId === employee.id) clearEmployeeForm();
-      await loadEmployees();
       setPayrollPreview([]);
+      setArchiveCandidate(null);
+      setArchiveDisableLogin(false);
+      setArchiveLoginDisabled(false);
+      try {
+        await loadEmployees();
+      } catch (refreshError) {
+        console.warn("Employee archived, but the refreshed register could not be loaded:", refreshError);
+        // The write was successful; a subsequent refresh is preferable to
+        // misleading the user with an 'archive failed' message.
+        alert("Employee archived successfully, but the staff register did not refresh. Reload the page to see the change.");
+      }
     } catch (error) {
       console.error("Failed to archive employee:", error);
-      alert("Employee could not be archived.");
+      setArchiveError(disabledInThisOperation
+        ? `Login was disabled, but archiving was not completed: ${error?.message || "Please retry archiving."}`
+        : `Employee was not archived: ${error?.message || "Please try again."}`);
+    } finally {
+      archiveSubmittingRef.current = false;
+      setArchiveSubmitting(false);
     }
   }
 
@@ -2378,9 +2480,16 @@ function App() {
         .filter(Boolean)
         .sort((a, b) => a.localeCompare(b));
 
-      const resolvedWeeks = await Promise.all(
-        liveWeekIds.map(async (weekId) => getResolvedPayrollDays(weekId))
-      );
+      const resolvedWeeks = [];
+      const baseReadCache = new Map();
+      // A staff login must not fan out 15+ concurrent iOS Firestore reads.
+      for (let index = 0; index < liveWeekIds.length; index += 3) {
+        const group = await Promise.all(
+          liveWeekIds.slice(index, index + 3)
+            .map((weekId) => getResolvedPayrollDays(weekId, baseReadCache))
+        );
+        resolvedWeeks.push(...group);
+      }
 
       const shifts = [];
 
@@ -2491,7 +2600,7 @@ function App() {
     }
   }
 
-  async function getResolvedPayrollDays(weekId) {
+  async function getResolvedPayrollDays(weekId, baseReadCache = null) {
     const archivedWeek = archiveWeeks.find(
       (week) => week.weekStart === weekId
     );
@@ -2508,8 +2617,10 @@ function App() {
       throw new Error("The selected payroll week could not be found.");
     }
 
-    const baseRota = await getBaseRotaForWeek(weekId);
-    const { overrideData } = await loadOverridesForWeek(weekId);
+    const [baseRota, { overrideData }] = await Promise.all([
+      baseReadCache ? getBaseRotaCachedForWeek(weekId, baseReadCache) : getBaseRotaForWeek(weekId),
+      loadOverridesForWeek(weekId),
+    ]);
 
     return buildFlattenedArchiveDays(weekId, baseRota, overrideData, liveWeek.dayNotes || {});
   }
@@ -2518,43 +2629,65 @@ function App() {
   // A saved weekly override takes precedence over the applicable dated base rota.
   async function loadLiveVacancies() {
     const requestId = ++vacanciesRequestRef.current;
+    const startedAt = Date.now();
     setLiveVacanciesLoading(true);
     setLiveVacanciesError("");
 
     try {
-      // Fetch the week register again: another senior may have published a week
-      // since the current employee signed in.
-      const currentLiveWeeks = await loadWeeks();
+      // Both sources are fetched afresh, but do not update the weekly editor's
+      // state or trigger its loading effects. A newly effective template matters.
+      const [currentLiveWeeks, currentVersions] = await Promise.all([
+        readWeeks(true), readBaseVersions(true),
+      ]);
+      if (requestId !== vacanciesRequestRef.current) return;
+
       const todayId = toDateId(new Date());
       const currentMonday = getCurrentMondayId();
       const newestRollingWeek = getNewestLiveWeekId();
-
       const availableLiveWeeks = currentLiveWeeks
         .filter((week) => {
           const weekId = normaliseWeekId(week);
-          return Boolean(weekId) &&
-            weekId >= currentMonday &&
-            week.status !== "draft" &&
-            week.status !== "archived" &&
+          return Boolean(weekId) && weekId >= currentMonday &&
+            week.status !== "draft" && week.status !== "archived" &&
             (weekId <= newestRollingWeek || week.status === "published-early");
         })
         .sort((a, b) => normaliseWeekId(a).localeCompare(normaliseWeekId(b)));
 
-      const resolvedWeeks = await Promise.all(availableLiveWeeks.map(async (week) => {
-        const weekId = normaliseWeekId(week);
-        const [baseRota, { overrideData }] = await Promise.all([
-          getBaseRotaForWeek(weekId),
-          loadOverridesForWeek(weekId),
-        ]);
-        return buildFlattenedArchiveDays(weekId, baseRota, overrideData, week.dayNotes || {});
-      }));
+      const baseReadCache = new Map();
+      const resolvedWeeks = new Array(availableLiveWeeks.length);
+      let nextIndex = 0;
+      // At most three active weeks (and shared base-template reads) at once.
+      // Stop queuing work when a newer refresh supersedes this one.
+      const resolveWorker = async () => {
+        while (requestId === vacanciesRequestRef.current) {
+          const index = nextIndex++;
+          if (index >= availableLiveWeeks.length) return;
+          const week = availableLiveWeeks[index];
+          const weekId = normaliseWeekId(week);
+          const [baseRota, { overrideData }] = await Promise.all([
+            getBaseRotaCachedForWeek(weekId, baseReadCache, currentVersions, true),
+            loadOverridesForWeek(weekId, true),
+          ]);
+          if (requestId !== vacanciesRequestRef.current) return;
+          resolvedWeeks[index] = buildFlattenedArchiveDays(
+            weekId, baseRota, overrideData, week.dayNotes || {}
+          );
+        }
+      };
+      const workerCount = Math.min(3, availableLiveWeeks.length);
+      await withReadDeadline(
+        Promise.all(Array.from({ length: workerCount }, () => resolveWorker())),
+        "Live vacancies refresh",
+        Math.max(1000, VACANCIES_LOAD_TIMEOUT_MS - (Date.now() - startedAt))
+      );
+      if (requestId !== vacanciesRequestRef.current) return;
 
       const vacancies = [];
       resolvedWeeks.flat().forEach((day) => {
         if (!day?.date || day.date < todayId) return;
         (day.shifts || []).forEach((shiftEntry) => {
           const vacantSlots = Math.max(0, Math.floor(Number(shiftEntry.vacantSlots) || 0));
-          if (vacantSlots === 0) return;
+          if (!vacantSlots) return;
           vacancies.push({
             date: day.date,
             shift: shiftEntry.shift,
@@ -2566,13 +2699,18 @@ function App() {
         });
       });
       vacancies.sort((a, b) => a.date.localeCompare(b.date) || a.sortOrder - b.sortOrder);
-
-      if (requestId === vacanciesRequestRef.current) setLiveVacancies(vacancies);
+      setLiveVacancies(vacancies);
     } catch (error) {
       console.error("Failed to load live vacancies:", error);
       if (requestId === vacanciesRequestRef.current) {
+        // Never label old cached vacancies as currently available.
         setLiveVacancies([]);
-        setLiveVacanciesError("Could not retrieve vacancies from the live rotas. Please try again.");
+        setLiveVacanciesError(
+          `Could not retrieve the complete live vacancy list. ${error?.message || "Check your connection and retry."}`
+        );
+        // Do not allow already-running workers to queue more weeks after a timeout.
+        setLiveVacanciesLoading(false);
+        vacanciesRequestRef.current += 1;
       }
     } finally {
       if (requestId === vacanciesRequestRef.current) setLiveVacanciesLoading(false);
@@ -3605,8 +3743,8 @@ function App() {
     }
   }
 
-  async function loadOverridesForWeek(weekId) {
-    const snapshot = await getDocs(
+  async function loadOverridesForWeek(weekId, serverOnly = false) {
+    const snapshot = await (serverOnly ? getServerDocs : getDocs)(
       collection(db, "rotaWeeks", weekId, "overrides")
     );
 
@@ -3808,12 +3946,23 @@ function App() {
     versions = baseVersions
   ) {
     if (!weekId) return {};
-
+    const requestId = ++baseWeekRequestRef.current;
     setLoadedBaseForWeek("");
-    const rotaData = await getBaseRotaForWeek(weekId, versions);
-    setRota(rotaData);
-    setLoadedBaseForWeek(weekId);
-    return rotaData;
+    setWeekReadErrors((previous) => ({ ...previous, base: "" }));
+    try {
+      const rotaData = await getBaseRotaForWeek(weekId, versions);
+      if (requestId === baseWeekRequestRef.current && weekId === selectedWeekRef.current) {
+        setRota(rotaData);
+        setLoadedBaseForWeek(weekId);
+      }
+      return rotaData;
+    } catch (error) {
+      if (requestId === baseWeekRequestRef.current && weekId === selectedWeekRef.current) {
+        setWeekReadErrors((previous) => ({ ...previous, base: error?.message || "Base rota unavailable." }));
+        setLoadedBaseForWeek("");
+      }
+      throw error;
+    }
   }
 
   useEffect(() => {
@@ -3828,6 +3977,7 @@ function App() {
       setSelectedWeek("");
       setRota({});
       setBaseVersions([]);
+      setBaseVersionsInitialised(false);
       setBaseEditorRota({});
       setBaseEditorWeek2Rota({});
       setBasePatternLength(1);
@@ -3855,10 +4005,18 @@ function App() {
       setAnnualLeaveSidebarOpen(false);
       setAnnualLeaveLoading(false);
       setVacanciesSidebarOpen(false);
+      setArchiveCandidate(null);
+      setArchiveDisableLogin(false);
+      setArchiveLoginDisabled(false);
+      setArchiveError("");
       setLiveVacancies([]);
       setLiveVacanciesError("");
       setLiveVacanciesLoading(false);
       vacanciesRequestRef.current += 1;
+      baseWeekRequestRef.current += 1;
+      overridesWeekRequestRef.current += 1;
+      setWeekReadErrors({ base: "", overrides: "" });
+      setWeekLoadSlow(false);
       setArchiveWeeks([]);
       setSelectedArchiveWeek("");
       setArchiveLoading(false);
@@ -3884,53 +4042,18 @@ function App() {
 
       try {
         // Always load existing weeks first so the rota remains usable.
-        let loadedWeeks = await loadSection("weeks", () => loadWeeks());
+        const loadedWeeks = await loadSection("weeks", () => loadWeeks());
 
-        if (isAdmin) {
-          try {
-            const createdMissingWeeks = await ensureEightWeeks(loadedWeeks);
-
-            if (createdMissingWeeks) {
-              loadedWeeks = await loadWeeks();
-            }
-          } catch (err) {
-            console.error("Failed to ensure future weeks:", err);
-          }
+        // If the current week itself is missing, make it available before
+        // showing the rota. Routine future-week work runs after first render.
+        if (isAdmin && !loadedWeeks.some((week) => normaliseWeekId(week) === currentWeekId)) {
+          await ensureEightWeeks(loadedWeeks);
+          await loadWeeks();
         }
 
         // Base rota is essential; optional sections are independent and never
         // hold the weekly rota behind their own network requests.
-        const loadedVersions = await loadSection("base", () => loadBaseVersions());
-        const optional = [
-          ["employees", () => loadEmployees()],
-          ["annualLeave", () => loadAnnualLeave()],
-        ];
-        if (isAdmin) optional.push(
-          ["annualLeaveArchive", () => loadAnnualLeaveArchive()],
-          ["payrollAdjustments", () => loadPayrollAdjustments()],
-          ["sickness", () => loadSicknessAbsences()],
-        );
-        optional.forEach(([key, loader]) => {
-          loadSection(key, loader).catch((error) => console.error(`Optional section ${key} unavailable`, error));
-        });
-
-        // Maintenance is independent of the first render, but still runs only
-        // once per session. A maintenance failure must not block the rota.
-        if (isAdmin && !maintenanceStartedRef.current) {
-          maintenanceStartedRef.current = true;
-          (async () => {
-            try {
-              const result = await runRotaMaintenance(loadedWeeks, loadedVersions);
-              console.info("Rota maintenance complete:", result);
-              await loadWeeks();
-              await loadSection("base", () => loadBaseVersions());
-            } catch (err) {
-              console.error("Rota maintenance failed safely:", err);
-              maintenanceStartedRef.current = false;
-            }
-            loadSection("archive", () => loadArchiveWeeks()).catch((error) => console.error("Archive unavailable", error));
-          })();
-        }
+        await loadSection("base", () => loadBaseVersions());
       } catch (error) {
         console.error("Failed to load initial rota data:", error);
         if (!cancelled) {
@@ -3950,6 +4073,58 @@ function App() {
       cancelled = true;
     };
   }, [user, userProfile, isEditor, isAdmin, loadAttempt]);
+
+  // Optional documents and housekeeping start AFTER the rota is viewable.
+  // This avoids a mobile login competing with payroll, A/L and archive reads.
+  useEffect(() => {
+    if (!user || !initialRotaReady) return;
+    const optional = [
+      ["employees", () => loadEmployees()],
+      ["annualLeave", () => loadAnnualLeave()],
+    ];
+    if (isAdmin) optional.push(
+      ["annualLeaveArchive", () => loadAnnualLeaveArchive()],
+      ["payrollAdjustments", () => loadPayrollAdjustments()],
+      ["sickness", () => loadSicknessAbsences()],
+    );
+    let cancelled = false;
+    (async () => {
+      // Two optional requests at once, rather than five competing with the
+      // weekly rota and vacancy sidebar on a mobile connection.
+      for (let index = 0; index < optional.length && !cancelled; index += 2) {
+        await Promise.all(optional.slice(index, index + 2).map(([key, loader]) =>
+          loadSection(key, loader).catch((error) => {
+            console.error(`Optional section ${key} unavailable`, error);
+          })
+        ));
+      }
+    })();
+    return () => { cancelled = true; };
+  }, [user, initialRotaReady, isAdmin]);
+
+  useEffect(() => {
+    if (!user || !initialRotaReady || !isAdmin || maintenanceStartedRef.current) return;
+    maintenanceStartedRef.current = true;
+    (async () => {
+      let currentWeeks = weeks;
+      try {
+        // Week generation must never hold the initial rota behind writes.
+        if (await ensureEightWeeks(currentWeeks)) currentWeeks = await loadWeeks();
+      } catch (error) {
+        console.error("Future rota generation unavailable; existing weeks remain visible:", error);
+      }
+      try {
+        const result = await runRotaMaintenance(currentWeeks, baseVersions);
+        console.info("Rota maintenance complete:", result);
+        await loadWeeks();
+        await loadSection("base", () => loadBaseVersions());
+      } catch (error) {
+        console.error("Rota maintenance failed safely:", error);
+      }
+      loadSection("archive", () => loadArchiveWeeks())
+        .catch((error) => console.error("Archive unavailable", error));
+    })();
+  }, [user, initialRotaReady, isAdmin]);
 
   useEffect(() => {
     if (initialRotaReady || !user) { setInitialLoadSlow(false); return; }
@@ -4094,66 +4269,164 @@ function App() {
   }, [user]);
 
 
-  useEffect(() => {
-    if (!user || !selectedWeek) {
-      setRota({});
-      setLoadedBaseForWeek("");
-      return;
-    }
-
-    loadBaseRotaForSelectedWeek().catch((error) => {
-      console.error("Failed to load dated base rota:", error);
-      setRota({});
-      setLoadedBaseForWeek(selectedWeek);
-    });
-  }, [user, selectedWeek, baseVersions]);
-
-  async function loadOverrides() {
-    if (!selectedWeek) return;
-
+  async function loadOverrides(weekId = selectedWeek) {
+    if (!weekId) return;
+    const requestId = ++overridesWeekRequestRef.current;
     setOverridesLoading(true);
     setLoadedOverridesForWeek("");
+    setWeekReadErrors((previous) => ({ ...previous, overrides: "" }));
 
     try {
-      const snapshot = await getDocs(
-        collection(db, "rotaWeeks", selectedWeek, "overrides")
-      );
-
-      const overrideData = {};
-
-      snapshot.forEach((doc) => {
-        const data = doc.data();
-
-        if (data.active === false) return;
-
-        if (!overrideData[data.dayIndex]) {
-          overrideData[data.dayIndex] = {};
-        }
-
-        overrideData[data.dayIndex][data.shift] = data;
-      });
-
-      setOverrides(overrideData);
-      setLoadedOverridesForWeek(selectedWeek);
+      const { overrideData } = await loadOverridesForWeek(weekId);
+      if (requestId === overridesWeekRequestRef.current && weekId === selectedWeekRef.current) {
+        setOverrides(overrideData);
+        setLoadedOverridesForWeek(weekId);
+      }
+      return overrideData;
     } catch (error) {
       console.error("Failed to load weekly overrides:", error);
-      setOverrides({});
-      setLoadedOverridesForWeek(selectedWeek);
+      if (requestId === overridesWeekRequestRef.current && weekId === selectedWeekRef.current) {
+        setWeekReadErrors((previous) => ({ ...previous, overrides: error?.message || "Weekly overrides unavailable." }));
+        setLoadedOverridesForWeek("");
+      }
+      throw error;
     } finally {
-      setOverridesLoading(false);
+      if (requestId === overridesWeekRequestRef.current) setOverridesLoading(false);
     }
   }
 
+  // Read the two parts of a week as ONE consistent operation. Previously,
+  // independent effects and completion flags could be invalidated separately
+  // when template metadata changed or Safari resumed during a pending read.
+  // A new selection supersedes BOTH requests, and a transient timeout retries
+  // automatically once without requiring an adjacent-week detour.
   useEffect(() => {
-    if (!user || !selectedWeek) {
+    const weekId = selectedWeek;
+    const requestId = ++baseWeekRequestRef.current;
+    const overrideRequestId = ++overridesWeekRequestRef.current;
+    let active = true;
+
+    if (!user || !weekId || !baseVersionsInitialised) {
+      setRota({});
       setOverrides({});
+      setLoadedBaseForWeek("");
       setLoadedOverridesForWeek("");
       setOverridesLoading(false);
-      return;
+      setWeekLoadStage("");
+      return () => {
+        active = false;
+        baseWeekRequestRef.current += 1;
+        overridesWeekRequestRef.current += 1;
+      };
     }
 
-    loadOverrides();
-  }, [user, selectedWeek]);
+    weekLoadStartedAtRef.current = Date.now();
+    setRota({});
+    setOverrides({});
+    setLoadedBaseForWeek("");
+    setLoadedOverridesForWeek("");
+    setOverridesLoading(true);
+    setWeekReadErrors({ base: "", overrides: "" });
+    setWeekLoadStage("Loading the base rota and weekly changes…");
+
+    const isCurrent = () => active &&
+      baseWeekRequestRef.current === requestId &&
+      overridesWeekRequestRef.current === overrideRequestId &&
+      selectedWeekRef.current === weekId;
+
+    let currentFetchAttempt = 0;
+    const fetchWeek = async (serverOnly = false, attemptIndex = 0) => {
+      let baseReady = false;
+      let changesReady = false;
+      const [baseRota, weeklyOverrides] = await Promise.all([
+        getBaseRotaForWeek(weekId, baseVersions, serverOnly)
+          .then((value) => {
+            baseReady = true;
+            if (isCurrent() && currentFetchAttempt === attemptIndex && !changesReady) setWeekLoadStage("Waiting for this week's changes…");
+            return value;
+          })
+          .catch((error) => {
+            throw new Error(`Base rota: ${error?.message || "Unable to retrieve template."}`);
+          }),
+        loadOverridesForWeek(weekId, serverOnly)
+          .then((value) => {
+            changesReady = true;
+            if (isCurrent() && currentFetchAttempt === attemptIndex && !baseReady) setWeekLoadStage("Waiting for the base rota template…");
+            return value;
+          })
+          .catch((error) => {
+            throw new Error(`Weekly changes: ${error?.message || "Unable to retrieve changes."}`);
+          }),
+      ]);
+      return { baseRota, overrideData: weeklyOverrides.overrideData };
+    };
+
+    (async () => {
+      try {
+        for (let attempt = 0; attempt < 2; attempt += 1) {
+          if (!isCurrent()) return;
+          try {
+            currentFetchAttempt = attempt;
+            const { baseRota, overrideData } = await fetchWeek(attempt > 0, attempt);
+            if (!isCurrent()) return;
+            setRota(baseRota);
+            setOverrides(overrideData);
+            setLoadedBaseForWeek(weekId);
+            setLoadedOverridesForWeek(weekId);
+            setWeekLoadStage("");
+            setWeekReadErrors({ base: "", overrides: "" });
+            return;
+          } catch (error) {
+            if (!isCurrent()) return;
+            const retriable = /timed out|unavailable|network|deadline|connection/i.test(
+              `${error?.code || ""} ${error?.message || ""}`
+            );
+            if (!retriable || attempt === 1) throw error;
+            console.warn(`Week ${weekId} read interrupted; retrying once:`, error);
+            setWeekLoadStage("Connection interrupted. Retrying this week…");
+            await new Promise((resolve) => setTimeout(resolve, 500));
+          }
+        }
+      } catch (error) {
+        if (!isCurrent()) return;
+        console.error(`Unable to load W/C ${weekId}:`, error);
+        const message = error?.message || "Unable to retrieve this rota.";
+        setWeekReadErrors(message.startsWith("Base rota:")
+          ? { base: message, overrides: "" }
+          : { base: "", overrides: message });
+        setWeekLoadStage("");
+      } finally {
+        if (isCurrent()) setOverridesLoading(false);
+      }
+    })();
+
+    return () => {
+      active = false;
+      baseWeekRequestRef.current += 1;
+      overridesWeekRequestRef.current += 1;
+    };
+  }, [user, selectedWeek, baseVersions, baseVersionsInitialised, loadAttempt, weekLoadAttempt]);
+
+  // iOS can suspend active requests while backgrounded. On returning to an
+  // unfinished week, start a fresh coordinated read instead of requiring the
+  // user to jump to an adjacent week and back.
+  useEffect(() => {
+    if (!user || !selectedWeek) return;
+    const resume = () => {
+      if (document.visibilityState !== "visible") return;
+      if (loadedBaseForWeek === selectedWeek && loadedOverridesForWeek === selectedWeek && !overridesLoading) return;
+      if (Date.now() - weekLoadStartedAtRef.current < 3000) return;
+      setWeekLoadAttempt((value) => value + 1);
+    };
+    document.addEventListener("visibilitychange", resume);
+    window.addEventListener("pageshow", resume);
+    window.addEventListener("online", resume);
+    return () => {
+      document.removeEventListener("visibilitychange", resume);
+      window.removeEventListener("pageshow", resume);
+      window.removeEventListener("online", resume);
+    };
+  }, [user, selectedWeek, loadedBaseForWeek, loadedOverridesForWeek, overridesLoading]);
 
   useEffect(() => {
     if (!user || !selectedWeek) {
@@ -4336,6 +4609,10 @@ function App() {
 
   async function saveBaseShift() {
     if (!isEditor || !baseEffectiveFrom) return;
+    if (loadStatus.employees !== "ready") {
+      alert("The employee register has not loaded. Retry that section before editing shifts.");
+      return;
+    }
 
     const staff = canonicaliseRegisteredStaffNames(
       baseStaffText
@@ -4457,6 +4734,10 @@ function App() {
 
   async function saveOverride() {
     if (!selectedWeek || !isEditor) return;
+    if (loadStatus.employees !== "ready") {
+      alert("The employee register has not loaded. Retry that section before editing shifts.");
+      return;
+    }
 
     const staff = canonicaliseRegisteredStaffNames(
       editStaffText
@@ -4641,6 +4922,24 @@ function App() {
     loadedOverridesForWeek === selectedWeek;
 
   useEffect(() => {
+    if (!user || weeklyRotaReady || !selectedWeek) {
+      setWeekLoadSlow(false);
+      return;
+    }
+    setWeekLoadSlow(false);
+    const timer = setTimeout(() => setWeekLoadSlow(true), 7000);
+    return () => clearTimeout(timer);
+  }, [user, selectedWeek, weeklyRotaReady, weekLoadAttempt, loadAttempt]);
+
+  function retryWeeklyRota() {
+    setWeekReadErrors({ base: "", overrides: "" });
+    setWeekLoadAttempt((value) => value + 1);
+    if (loadStatus.weeks === "error" || loadStatus.base === "error" || visibleWeeks.length === 0) {
+      setLoadAttempt((value) => value + 1);
+    }
+  }
+
+  useEffect(() => {
     if (user && weeklyRotaReady && !initialRotaReady) {
       setInitialRotaReady(true);
     }
@@ -4734,14 +5033,21 @@ function App() {
   }
 
   if (user && !initialRotaReady) {
+    const noSelectableWeeks = loadStatus.weeks === "ready" && loadStatus.base === "ready" &&
+      visibleWeeks.length === 0;
+    const criticalError = loadStatus.weeks === "error" || loadStatus.base === "error" ||
+      noSelectableWeeks || Boolean(weekReadErrors.base || weekReadErrors.overrides);
+    const criticalDetail = loadErrors.weeks || loadErrors.base ||
+      weekReadErrors.base || weekReadErrors.overrides ||
+      (noSelectableWeeks ? "No live rota weeks are available for this account." : "");
     return <main className="page"><section className="rota-load-panel">
       <img src={lcMonogram} alt="Longcroft" className="lc-monogram login-monogram" />
-      <h2>{loadStatus.weeks === "error" ? "Unable to load rota" : initialLoadSlow ? "The rota is taking longer than expected" : "Loading rota…"}</h2>
-      {(loadStatus.weeks === "error" || initialLoadSlow) && <>
-        <p>Check your connection and try again. No rota changes have been made.</p>
-        <button type="button" onClick={() => setLoadAttempt((value) => value + 1)}>Retry loading</button>
+      <h2>{criticalError ? "Unable to load rota" : initialLoadSlow ? "The rota is taking longer than expected" : "Loading rota…"}</h2>
+      {(criticalError || initialLoadSlow) && <>
+        <p>Check your connection and try again. An incomplete rota is not displayed as empty.</p>
+        <button type="button" onClick={retryWeeklyRota}>Retry loading</button>
       </>}
-      {loadStatus.weeks === "error" && <p className="rota-load-detail">{loadErrors.weeks}</p>}
+      {criticalError && <p className="rota-load-detail">{criticalDetail}</p>}
       <button type="button" className="loading-signout-btn" onClick={logout}>Sign Out</button>
     </section></main>;
   }
@@ -5160,7 +5466,16 @@ function App() {
             {isEditor && <SectionNotice section="employees" title="Employee register" />}
             <SectionNotice section="annualLeave" title="Annual leave" />
             {!weeklyRotaReady ? (
-              <p className="loading-text">Loading rota...</p>
+              <div className="loading-text" role={weekReadErrors.base || weekReadErrors.overrides ? "alert" : "status"}>
+                <p>{weekReadErrors.base || weekReadErrors.overrides ? "Unable to load this week's rota." : "Loading rota..."}</p>
+                {(weekReadErrors.base || weekReadErrors.overrides || weekLoadSlow) && <>
+                  <p style={{ fontWeight: 400, fontSize: "0.9em" }}>
+                    {weekReadErrors.base || weekReadErrors.overrides ||
+                      (weekLoadStage || "This is taking longer than expected. Check your connection.")}
+                  </p>
+                  <button type="button" onClick={retryWeeklyRota}>Retry loading this week</button>
+                </>}
+              </div>
             ) : (
               <>
         {selectedWeekAnnualLeave.length > 0 && (
@@ -5389,6 +5704,7 @@ function App() {
               value={editStaffText.split("\n").map((name) => name.trim()).filter(Boolean)}
               onChange={(staff) => setEditStaffText(staff.join("\n"))}
               allowShadow
+              disabled={loadStatus.employees !== "ready"}
             />
 
             <label className="editor-full">
@@ -6060,7 +6376,7 @@ function App() {
                               <button
                                 type="button"
                                 className="danger"
-                                onClick={() => archiveEmployee(employee)}
+                                onClick={() => openArchiveEmployeeDialog(employee)}
                               >
                                 Archive
                               </button>
@@ -6721,6 +7037,7 @@ function App() {
                 employees={isAdmin ? employees : staffDirectory}
                 value={baseStaffText.split("\n").map((name) => name.trim()).filter(Boolean)}
                 onChange={(staff) => setBaseStaffText(staff.join("\n"))}
+                disabled={loadStatus.employees !== "ready"}
               />
 
               <div className="editor-actions">
@@ -7148,6 +7465,52 @@ function App() {
             </div>
           </aside>
         </>
+      )}
+
+      {isAdmin && archiveCandidate && (
+        <div className="modalOverlay account-modal-overlay" onMouseDown={(event) => {
+          if (event.target === event.currentTarget) closeArchiveEmployeeDialog();
+        }}>
+          <div className="modal account-manager-modal" role="dialog" aria-modal="true" aria-labelledby="archive-employee-heading"
+            style={{ maxWidth: "min(470px, 92vw)", textAlign: "left" }}>
+            <h2 id="archive-employee-heading">Archive Employee</h2>
+            <p><strong>{archiveCandidate.displayName}</strong> will be moved to the Staff &amp; Payroll Archive.
+              Historical rota and payroll records will be preserved.</p>
+
+            {archiveCandidate.authUid ? (
+              archiveCandidate.accountEnabled === false || archiveLoginDisabled ? (
+                <p style={{ color: "#555", fontSize: "0.92rem" }}>
+                  This employee's login {archiveLoginDisabled ? "has now been disabled" : "is already disabled"}.
+                </p>
+              ) : (
+                <label style={{ display: "flex", alignItems: "flex-start", gap: 10, padding: "12px 0", fontWeight: 600, cursor: "pointer" }}>
+                  <input type="checkbox" checked={archiveDisableLogin} disabled={archiveSubmitting}
+                    onChange={(event) => setArchiveDisableLogin(event.target.checked)}
+                    style={{ width: 18, height: 18, flex: "0 0 auto", marginTop: 2 }} />
+                  <span>Disable this employee's login account before archiving
+                    <small style={{ display: "block", fontWeight: 400, color: "#555", marginTop: 4 }}>
+                      Leave unchecked to archive their staff record without changing login access.
+                    </small>
+                  </span>
+                </label>
+              )
+            ) : (
+              <p style={{ color: "#555", fontSize: "0.92rem" }}>No login account is linked to this employee.</p>
+            )}
+
+            {archiveError && <p role="alert" style={{ color: "#a00020", fontWeight: 600 }}>{archiveError}</p>}
+            <div className="buttonRow" style={{ justifyContent: "flex-end", flexWrap: "wrap" }}>
+              <button type="button" className="continueButton" onClick={closeArchiveEmployeeDialog}
+                disabled={archiveSubmitting}>Cancel</button>
+              <button type="button" className="dangerButton"
+                disabled={archiveSubmitting || (archiveDisableLogin && archiveCandidate.authUid === user?.uid)}
+                onClick={() => archiveEmployee(archiveCandidate, archiveDisableLogin || archiveLoginDisabled)}>
+                {archiveSubmitting ? "Archiving…" : archiveDisableLogin && !archiveLoginDisabled
+                  ? "Disable Login & Archive" : "Archive Employee"}
+              </button>
+            </div>
+          </div>
+        </div>
       )}
 
       {showLogoutWarning && (
