@@ -3317,6 +3317,10 @@ textarea::placeholder {
     white-space: nowrap;
     cursor: pointer;
   }
+  /* Windows native primary buttons have a subtler corner radius. */
+  .auth-actions-editor .editor-right-actions.is-windows > .upcoming-shifts-sidebar-toggle {
+    border-radius: 2px;
+  }
   .auth-actions-editor .editor-right-actions > .upcoming-shifts-sidebar-toggle:hover {
     background: #565656;
   }

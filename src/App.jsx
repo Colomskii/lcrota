@@ -5138,7 +5138,7 @@ function App() {
             )}
 
             {isEditor && adminView !== "payroll" ? (
-              <div className={`editor-right-actions ${shiftSidebarButtons ? "has-shift-shortcuts" : ""}`}>
+              <div className={`editor-right-actions ${shiftSidebarButtons ? "has-shift-shortcuts" : ""} ${/^win/i.test(navigator.userAgentData?.platform || navigator.platform || "") ? "is-windows" : ""}`}>
                 {adminView !== "payroll" && (
                   <button type="button" onClick={handlePrint} className="print-button">
                     Print Rota
